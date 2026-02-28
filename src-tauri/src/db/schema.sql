@@ -3,17 +3,20 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS provider (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL,
     base_url TEXT,
-    api_key_env_var TEXT,
+    model_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS conversation (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT,
     title TEXT,
+    provider_id INTEGER NOT NULL,
+    user_id TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (provider_id) REFERENCES provider(id)
 );
 
 CREATE TABLE IF NOT EXISTS message (
@@ -27,43 +30,45 @@ CREATE TABLE IF NOT EXISTS message (
 
 CREATE TABLE IF NOT EXISTS agent_turn (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'completed',
-    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    completed_at TEXT,
-    error TEXT,
-    FOREIGN KEY (conversation_id) REFERENCES conversation(id) ON DELETE CASCADE
+    message_id INTEGER NOT NULL,
+    provider_id INTEGER NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE,
+    FOREIGN KEY (provider_id) REFERENCES provider(id)
 );
 
 CREATE TABLE IF NOT EXISTS tool (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
-    description TEXT
+    description TEXT,
+    schema_json TEXT,
+    impl_ref TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tool_invocation (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    agent_turn_id INTEGER NOT NULL,
-    tool_id INTEGER,
-    invocation_name TEXT NOT NULL,
+    tool_id INTEGER NOT NULL,
+    turn_id INTEGER NOT NULL,
     arguments_json TEXT NOT NULL,
-    result_json TEXT,
+    result_text TEXT,
     status TEXT NOT NULL DEFAULT 'completed',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (agent_turn_id) REFERENCES agent_turn(id) ON DELETE CASCADE,
-    FOREIGN KEY (tool_id) REFERENCES tool(id) ON DELETE SET NULL
+    FOREIGN KEY (tool_id) REFERENCES tool(id),
+    FOREIGN KEY (turn_id) REFERENCES agent_turn(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS pending_approval (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL,
-    tool_invocation_id INTEGER,
+    turn_id INTEGER NOT NULL,
+    action_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
-    request_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TEXT,
     FOREIGN KEY (conversation_id) REFERENCES conversation(id) ON DELETE CASCADE,
-    FOREIGN KEY (tool_invocation_id) REFERENCES tool_invocation(id) ON DELETE SET NULL
+    FOREIGN KEY (turn_id) REFERENCES agent_turn(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_message_conversation
