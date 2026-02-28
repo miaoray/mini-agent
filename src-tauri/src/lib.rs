@@ -271,25 +271,17 @@ async fn run_agent_turn(
                 if content.is_empty() {
                     return Err("assistant response content was empty".to_string());
                 }
-                final_assistant_content = client
-                    .chat_completion_stream_with_callback(
-                        &provider_runtime.model_id,
-                        &llm_messages,
-                        |delta| {
-                            app_handle
-                                .emit(
-                                    "chat-delta",
-                                    agent::ChatDeltaEvent {
-                                        conversation_id: conversation_id.clone(),
-                                        message_id: assistant_message_id.clone(),
-                                        delta: delta.to_string(),
-                                    },
-                                )
-                                .map_err(|e| e.to_string())
+                app_handle
+                    .emit(
+                        "chat-delta",
+                        agent::ChatDeltaEvent {
+                            conversation_id: conversation_id.clone(),
+                            message_id: assistant_message_id.clone(),
+                            delta: content.clone(),
                         },
                     )
-                    .await
                     .map_err(|e| e.to_string())?;
+                final_assistant_content = content;
                 break;
             }
         }

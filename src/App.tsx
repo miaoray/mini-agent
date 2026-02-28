@@ -1,34 +1,94 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
+
+type TurnEventPayload = {
+  conversation_id?: string;
+  conversationId?: string;
+  message_id?: string;
+  messageId?: string;
+};
+
+type ChatDeltaPayload = TurnEventPayload & { delta?: string };
+type ChatErrorPayload = TurnEventPayload & { message?: string };
+
+function payloadConversationId(payload: TurnEventPayload | null | undefined) {
+  return payload?.conversationId ?? payload?.conversation_id ?? "";
+}
+
+function payloadMessageId(payload: TurnEventPayload | null | undefined) {
+  return payload?.messageId ?? payload?.message_id ?? "";
+}
 
 function App() {
   const [greetMsg, setGreetMsg] = useState("");
   const [name, setName] = useState("");
   const [streamedText, setStreamedText] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
+  const activeMessageIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let unlistenDelta: UnlistenFn | null = null;
     let unlistenDone: UnlistenFn | null = null;
+    let unlistenError: UnlistenFn | null = null;
     let mounted = true;
 
     const setupListeners = async () => {
       try {
-        unlistenDelta = await listen<{ delta: string }>("chat-delta", (event) => {
+        unlistenDelta = await listen<ChatDeltaPayload>("chat-delta", (event) => {
           if (!mounted) {
+            return;
+          }
+          const payload = event.payload;
+          if (
+            payloadConversationId(payload) !== activeConversationIdRef.current ||
+            payloadMessageId(payload) !== activeMessageIdRef.current
+          ) {
             return;
           }
           setIsStreaming(true);
-          setStreamedText((prev) => prev + (event.payload?.delta ?? ""));
+          setStreamedText((prev) => prev + (payload?.delta ?? ""));
         });
-        unlistenDone = await listen("chat-done", () => {
+        unlistenDone = await listen<TurnEventPayload>("chat-done", (event) => {
           if (!mounted) {
             return;
           }
+          const payload = event.payload;
+          if (
+            payloadConversationId(payload) !== activeConversationIdRef.current ||
+            payloadMessageId(payload) !== activeMessageIdRef.current
+          ) {
+            return;
+          }
           setIsStreaming(false);
+          activeConversationIdRef.current = null;
+          activeMessageIdRef.current = null;
+          setActiveConversationId(null);
+          setActiveMessageId(null);
+        });
+        unlistenError = await listen<ChatErrorPayload>("chat-error", (event) => {
+          if (!mounted) {
+            return;
+          }
+          const payload = event.payload;
+          if (
+            payloadConversationId(payload) !== activeConversationIdRef.current ||
+            payloadMessageId(payload) !== activeMessageIdRef.current
+          ) {
+            return;
+          }
+          setIsStreaming(false);
+          activeConversationIdRef.current = null;
+          activeMessageIdRef.current = null;
+          setActiveConversationId(null);
+          setActiveMessageId(null);
+          setStreamedText(`Error: ${payload?.message ?? "Unknown error"}`);
         });
       } catch {
         // Ignore listener setup in non-Tauri environments (e.g. browser tests).
@@ -45,12 +105,33 @@ function App() {
       if (unlistenDone) {
         unlistenDone();
       }
+      if (unlistenError) {
+        unlistenError();
+      }
     };
   }, []);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  async function sendMessage(content: string) {
+    activeConversationIdRef.current = null;
+    activeMessageIdRef.current = null;
+    setActiveConversationId(null);
+    setActiveMessageId(null);
+    const nextConversationId =
+      conversationId ??
+      (await invoke<string>("create_conversation").then((id) => {
+        setConversationId(id);
+        return id;
+      }));
+    const nextMessageId = await invoke<string>("send_message", {
+      conversation_id: nextConversationId,
+      content,
+    });
+    activeConversationIdRef.current = nextConversationId;
+    activeMessageIdRef.current = nextMessageId;
+    setActiveConversationId(nextConversationId);
+    setActiveMessageId(nextMessageId);
+    setIsStreaming(true);
+    setGreetMsg("Message sent");
   }
 
   return (
@@ -76,7 +157,10 @@ function App() {
           e.preventDefault();
           setStreamedText("");
           setIsStreaming(false);
-          greet();
+          void sendMessage(name).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            setGreetMsg(`Error: ${message}`);
+          });
         }}
       >
         <input
