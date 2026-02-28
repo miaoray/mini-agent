@@ -15,10 +15,10 @@ pub struct DbState {
 
 #[allow(dead_code)]
 impl DbState {
-    pub fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub fn connection(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
         self.connection
             .lock()
-            .expect("database mutex should not be poisoned")
+            .map_err(|_| "database mutex is poisoned".to_string())
     }
 }
 
@@ -37,6 +37,9 @@ pub fn init_db(app: &AppHandle) -> Result<DbState, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+    use std::sync::Mutex;
+
     use rusqlite::Connection;
 
     #[derive(Debug)]
@@ -143,5 +146,29 @@ mod tests {
     #[test]
     fn db_filename_matches_plan() {
         assert_eq!(super::DB_FILENAME, "mini-agent.db");
+    }
+
+    #[test]
+    fn connection_returns_error_when_mutex_is_poisoned() {
+        let state = super::DbState {
+            connection: Mutex::new(
+                Connection::open_in_memory().expect("in-memory sqlite should open"),
+            ),
+        };
+
+        let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _guard = state
+                .connection
+                .lock()
+                .expect("mutex lock should succeed before poison");
+            panic!("intentional panic to poison mutex");
+        }));
+
+        let result = state.connection();
+        assert!(result.is_err());
+        assert_eq!(
+            result.err().as_deref(),
+            Some("database mutex is poisoned")
+        );
     }
 }
