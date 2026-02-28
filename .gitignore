@@ -1,0 +1,6 @@
+.env
+.worktrees
+node_modules
+dist
+target
+*.db
