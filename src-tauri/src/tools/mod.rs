@@ -25,7 +25,7 @@ mod tests {
     use super::{register_default_tools, ToolRegistry};
 
     #[test]
-    fn register_default_tools_adds_web_search() {
+    fn register_default_tools_adds_all_tools() {
         let mut registry = ToolRegistry::new();
         register_default_tools(&mut registry).expect("default tool registration should succeed");
 

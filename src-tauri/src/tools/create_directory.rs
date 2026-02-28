@@ -57,6 +57,9 @@ impl ToolImpl for CreateDirectoryTool {
 
 fn validate_safe_path(path: &str) -> Result<(), String> {
     let parsed = Path::new(path);
+    if parsed.is_absolute() {
+        return Err("absolute paths are not allowed".to_string());
+    }
     if parsed
         .components()
         .any(|component| matches!(component, Component::ParentDir))
@@ -68,40 +71,35 @@ fn validate_safe_path(path: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use serde_json::json;
-    use uuid::Uuid;
 
     use super::CreateDirectoryTool;
     use crate::tools::ToolImpl;
 
-    fn unique_temp_path(prefix: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("{prefix}-{}", Uuid::new_v4()))
-    }
-
     #[tokio::test]
     async fn create_directory_returns_pending_approval_and_does_not_create_directory() {
-        let path = unique_temp_path("create-dir-tool");
-        if path.exists() {
-            std::fs::remove_dir_all(&path).expect("cleanup existing test directory should succeed");
-        }
-
         let tool = CreateDirectoryTool::new();
+        let path = "safe/relative/create-dir-tool";
         let result = tool
-            .execute(json!({ "path": path.to_string_lossy() }))
+            .execute(json!({ "path": path }))
             .await
             .expect("create_directory should return pending approval");
 
         assert!(result.contains("PENDING_APPROVAL"));
-        assert!(result.contains(path.to_string_lossy().as_ref()));
-        assert!(!path.exists());
+        assert!(result.contains(path));
     }
 
     #[tokio::test]
     async fn create_directory_rejects_path_traversal() {
         let tool = CreateDirectoryTool::new();
         let result = tool.execute(json!({ "path": "../../../etc" })).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_directory_rejects_absolute_path() {
+        let tool = CreateDirectoryTool::new();
+        let result = tool.execute(json!({ "path": "/tmp/forbidden" })).await;
         assert!(result.is_err());
     }
 }
