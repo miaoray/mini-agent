@@ -77,10 +77,13 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
 #[allow(dead_code)]
 pub fn update_conversation_title(conn: &Connection, id: &str, title: &str) -> Result<()> {
     let now = now_unix_ts();
-    conn.execute(
+    let rows_affected = conn.execute(
         "UPDATE conversation SET title = ?1, updated_at = ?2 WHERE id = ?3",
         params![title, now, id],
     )?;
+    if rows_affected == 0 {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
     Ok(())
 }
 
@@ -142,5 +145,14 @@ mod tests {
         let loaded = super::get_conversation(&conn, &created.id)
             .expect("get conversation should succeed");
         assert_eq!(loaded.title, "Renamed Chat");
+    }
+
+    #[test]
+    fn update_conversation_title_errors_when_not_found() {
+        let conn = test_conn();
+
+        let err = super::update_conversation_title(&conn, "missing-id", "Renamed Chat")
+            .expect_err("update title should fail when conversation is missing");
+        assert!(matches!(err, rusqlite::Error::QueryReturnedNoRows));
     }
 }
