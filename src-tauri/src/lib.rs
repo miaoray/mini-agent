@@ -10,6 +10,19 @@ use rusqlite::{Connection, OptionalExtension, params};
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
+pub mod test_support {
+    use rusqlite::Connection;
+
+    use crate::llm::minimax::ChatMessage;
+
+    pub fn build_messages_for_llm(
+        conn: &Connection,
+        conversation_id: &str,
+    ) -> Result<Vec<ChatMessage>, rusqlite::Error> {
+        crate::agent::r#loop::build_messages_for_llm(conn, conversation_id)
+    }
+}
+
 #[allow(dead_code)]
 pub struct ToolRegistryState {
     registry: tools::ToolRegistry,
