@@ -16,7 +16,10 @@ pub enum MiniMaxError {
     Json(serde_json::Error),
     InvalidUtf8(String),
     MissingResponseContent,
+    MissingToolCallName,
+    MissingToolCallArguments,
     UnexpectedStatus(u16, String),
+    Callback(String),
 }
 
 impl Display for MiniMaxError {
@@ -27,9 +30,12 @@ impl Display for MiniMaxError {
             Self::Json(err) => write!(f, "failed to parse json payload: {err}"),
             Self::InvalidUtf8(err) => write!(f, "stream chunk contained invalid utf-8: {err}"),
             Self::MissingResponseContent => write!(f, "assistant response content was missing"),
+            Self::MissingToolCallName => write!(f, "tool call function name was missing"),
+            Self::MissingToolCallArguments => write!(f, "tool call function arguments were missing"),
             Self::UnexpectedStatus(status, body) => {
                 write!(f, "unexpected http status {status}: {body}")
             }
+            Self::Callback(err) => write!(f, "stream callback failed: {err}"),
         }
     }
 }
@@ -52,6 +58,19 @@ impl From<serde_json::Error> for MiniMaxError {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    pub id: String,
+    pub function_name: String,
+    pub function_arguments: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatCompletionOutput {
+    Content(String),
+    ToolCalls(Vec<ToolCall>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -104,12 +123,90 @@ impl MiniMaxClient {
             .ok_or(MiniMaxError::MissingResponseContent)
     }
 
+    pub async fn chat_completion_with_tools(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+    ) -> Result<ChatCompletionOutput, MiniMaxError> {
+        let response = self
+            .send_chat_completion_request_with_tools(model, messages, tools, false)
+            .await?;
+        let payload: OpenAiChatResponse = response.json().await?;
+        let message = payload
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|choice| choice.message)
+            .ok_or(MiniMaxError::MissingResponseContent)?;
+
+        if let Some(tool_calls) = message.tool_calls {
+            if !tool_calls.is_empty() {
+                return Ok(ChatCompletionOutput::ToolCalls(
+                    tool_calls
+                        .into_iter()
+                        .map(|tool_call| {
+                            let function_name = tool_call
+                                .function
+                                .name
+                                .ok_or(MiniMaxError::MissingToolCallName)?;
+                            let function_arguments = tool_call
+                                .function
+                                .arguments
+                                .ok_or(MiniMaxError::MissingToolCallArguments)?;
+                            Ok(ToolCall {
+                                id: tool_call.id.unwrap_or_default(),
+                                function_name,
+                                function_arguments,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, MiniMaxError>>()?,
+                ));
+            }
+        }
+
+        message
+            .content
+            .filter(|content| !content.is_empty())
+            .map(ChatCompletionOutput::Content)
+            .ok_or(MiniMaxError::MissingResponseContent)
+    }
+
     pub async fn chat_completion_stream_collect(
         &self,
         model: &str,
         messages: &[ChatMessage],
     ) -> Result<StreamedResponse, MiniMaxError> {
         let response = self.send_chat_completion_request(model, messages, true).await?;
+        self.collect_stream_with_callback(response, |_delta| Ok(())).await
+    }
+
+    pub async fn chat_completion_stream_with_callback<F>(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        mut on_delta: F,
+    ) -> Result<String, MiniMaxError>
+    where
+        F: FnMut(&str) -> Result<(), String>,
+    {
+        let response = self.send_chat_completion_request(model, messages, true).await?;
+        let streamed = self
+            .collect_stream_with_callback(response, |delta| {
+                on_delta(delta).map_err(MiniMaxError::Callback)
+            })
+            .await?;
+        Ok(streamed.collected_text)
+    }
+
+    async fn collect_stream_with_callback<F>(
+        &self,
+        response: reqwest::Response,
+        mut on_delta: F,
+    ) -> Result<StreamedResponse, MiniMaxError>
+    where
+        F: FnMut(&str) -> Result<(), MiniMaxError>,
+    {
         let mut stream = response.bytes_stream();
         let mut utf8_pending = Vec::new();
         let mut line_pending = String::new();
@@ -117,10 +214,21 @@ impl MiniMaxClient {
 
         while let Some(chunk) = stream.next().await {
             let bytes = chunk?;
-            process_sse_chunk(&bytes, &mut utf8_pending, &mut line_pending, &mut result)?;
+            process_sse_chunk(
+                &bytes,
+                &mut utf8_pending,
+                &mut line_pending,
+                &mut result,
+                &mut on_delta,
+            )?;
         }
 
-        finalize_sse_stream(&mut utf8_pending, &mut line_pending, &mut result)?;
+        finalize_sse_stream(
+            &mut utf8_pending,
+            &mut line_pending,
+            &mut result,
+            &mut on_delta,
+        )?;
 
         Ok(result)
     }
@@ -136,6 +244,38 @@ impl MiniMaxClient {
             model,
             messages,
             stream,
+        };
+
+        let response = self
+            .http_client
+            .post(endpoint)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let response_body = response.text().await.unwrap_or_default();
+            return Err(MiniMaxError::UnexpectedStatus(status.as_u16(), response_body));
+        }
+
+        Ok(response)
+    }
+
+    async fn send_chat_completion_request_with_tools(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        stream: bool,
+    ) -> Result<reqwest::Response, MiniMaxError> {
+        let endpoint = build_chat_completion_endpoint(&self.base_url);
+        let body = OpenAiChatRequestWithTools {
+            model,
+            messages,
+            stream,
+            tools,
         };
 
         let response = self
@@ -187,10 +327,21 @@ fn collect_streamed_response_from_chunks(
     let mut result = StreamedResponse::default();
 
     for chunk in chunks {
-        process_sse_chunk(&chunk, &mut utf8_pending, &mut line_pending, &mut result)?;
+        process_sse_chunk(
+            &chunk,
+            &mut utf8_pending,
+            &mut line_pending,
+            &mut result,
+            &mut |_delta| Ok(()),
+        )?;
     }
 
-    finalize_sse_stream(&mut utf8_pending, &mut line_pending, &mut result)?;
+    finalize_sse_stream(
+        &mut utf8_pending,
+        &mut line_pending,
+        &mut result,
+        &mut |_delta| Ok(()),
+    )?;
     Ok(result)
 }
 
@@ -199,23 +350,26 @@ fn process_sse_chunk(
     utf8_pending: &mut Vec<u8>,
     line_pending: &mut String,
     result: &mut StreamedResponse,
+    on_delta: &mut impl FnMut(&str) -> Result<(), MiniMaxError>,
 ) -> Result<(), MiniMaxError> {
     let decoded = decode_complete_utf8(chunk, utf8_pending, false)?;
-    append_decoded_text_and_parse_lines(&decoded, line_pending, result)
+    append_decoded_text_and_parse_lines(&decoded, line_pending, result, on_delta)
 }
 
 fn finalize_sse_stream(
     utf8_pending: &mut Vec<u8>,
     line_pending: &mut String,
     result: &mut StreamedResponse,
+    on_delta: &mut impl FnMut(&str) -> Result<(), MiniMaxError>,
 ) -> Result<(), MiniMaxError> {
     let decoded_tail = decode_complete_utf8(&[], utf8_pending, true)?;
-    append_decoded_text_and_parse_lines(&decoded_tail, line_pending, result)?;
+    append_decoded_text_and_parse_lines(&decoded_tail, line_pending, result, on_delta)?;
 
     if !line_pending.trim().is_empty() {
         if let Some(delta) = parse_sse_delta_line(line_pending)? {
             result.collected_text.push_str(&delta);
             result.deltas.push(delta);
+            on_delta(result.deltas.last().expect("delta was just pushed"))?;
         }
     }
     line_pending.clear();
@@ -227,6 +381,7 @@ fn append_decoded_text_and_parse_lines(
     decoded: &str,
     line_pending: &mut String,
     result: &mut StreamedResponse,
+    on_delta: &mut impl FnMut(&str) -> Result<(), MiniMaxError>,
 ) -> Result<(), MiniMaxError> {
     line_pending.push_str(decoded);
 
@@ -237,6 +392,7 @@ fn append_decoded_text_and_parse_lines(
         if let Some(delta) = parse_sse_delta_line(&line)? {
             result.collected_text.push_str(&delta);
             result.deltas.push(delta);
+            on_delta(result.deltas.last().expect("delta was just pushed"))?;
         }
     }
 
@@ -287,6 +443,14 @@ struct OpenAiChatRequest<'a> {
     stream: bool,
 }
 
+#[derive(Debug, Serialize)]
+struct OpenAiChatRequestWithTools<'a> {
+    model: &'a str,
+    messages: &'a [ChatMessage],
+    stream: bool,
+    tools: &'a [serde_json::Value],
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAiChatResponse {
     choices: Vec<OpenAiChoice>,
@@ -300,6 +464,19 @@ struct OpenAiChoice {
 #[derive(Debug, Deserialize)]
 struct OpenAiMessage {
     content: Option<String>,
+    tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiToolCall {
+    id: Option<String>,
+    function: OpenAiToolCallFunction,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiToolCallFunction {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

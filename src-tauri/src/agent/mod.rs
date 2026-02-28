@@ -37,3 +37,13 @@ pub struct ChatErrorEvent {
     pub message_id: String,
     pub message: String,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApprovalEvent {
+    pub conversation_id: String,
+    pub message_id: String,
+    pub approval_id: String,
+    pub action_type: String,
+    pub payload: serde_json::Value,
+}

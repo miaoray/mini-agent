@@ -1,11 +1,52 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
 
 function App() {
   const [greetMsg, setGreetMsg] = useState("");
   const [name, setName] = useState("");
+  const [streamedText, setStreamedText] = useState("");
+  const [isStreaming, setIsStreaming] = useState(false);
+
+  useEffect(() => {
+    let unlistenDelta: UnlistenFn | null = null;
+    let unlistenDone: UnlistenFn | null = null;
+    let mounted = true;
+
+    const setupListeners = async () => {
+      try {
+        unlistenDelta = await listen<{ delta: string }>("chat-delta", (event) => {
+          if (!mounted) {
+            return;
+          }
+          setIsStreaming(true);
+          setStreamedText((prev) => prev + (event.payload?.delta ?? ""));
+        });
+        unlistenDone = await listen("chat-done", () => {
+          if (!mounted) {
+            return;
+          }
+          setIsStreaming(false);
+        });
+      } catch {
+        // Ignore listener setup in non-Tauri environments (e.g. browser tests).
+      }
+    };
+
+    void setupListeners();
+
+    return () => {
+      mounted = false;
+      if (unlistenDelta) {
+        unlistenDelta();
+      }
+      if (unlistenDone) {
+        unlistenDone();
+      }
+    };
+  }, []);
 
   async function greet() {
     // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -33,6 +74,8 @@ function App() {
         className="row"
         onSubmit={(e) => {
           e.preventDefault();
+          setStreamedText("");
+          setIsStreaming(false);
           greet();
         }}
       >
@@ -44,6 +87,8 @@ function App() {
         <button type="submit">Greet</button>
       </form>
       <p>{greetMsg}</p>
+      <p data-testid="streamed-text">{streamedText}</p>
+      {isStreaming ? <p>Streaming...</p> : null}
     </main>
   );
 }

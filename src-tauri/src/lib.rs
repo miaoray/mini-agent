@@ -7,6 +7,7 @@ use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::Value;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
@@ -26,6 +27,21 @@ pub mod test_support {
 #[allow(dead_code)]
 pub struct ToolRegistryState {
     registry: tools::ToolRegistry,
+}
+
+const MAX_TOOL_LOOP_STEPS: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolBranch {
+    NeedsApproval,
+    ExecuteImmediately,
+}
+
+fn tool_branch_for_name(name: &str) -> ToolBranch {
+    match name {
+        "create_directory" | "write_file" => ToolBranch::NeedsApproval,
+        _ => ToolBranch::ExecuteImmediately,
+    }
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -117,32 +133,172 @@ async fn run_agent_turn(
     assistant_message_id: String,
     provider_runtime: agent::ProviderRuntime,
 ) -> Result<(), String> {
-    let llm_messages = {
+    let mut llm_messages = {
         let db_state = app_handle.state::<db::DbState>();
         let conn = db_state.connection()?;
         agent::r#loop::build_messages_for_llm(&conn, &conversation_id).map_err(|e| e.to_string())?
     };
-
-    // TODO(task-8/task-9): pass tool definitions and consume tool_calls once llm layer supports them.
+    {
+        let db_state = app_handle.state::<db::DbState>();
+        let conn = db_state.connection()?;
+        conn.execute(
+            "INSERT INTO message (id, conversation_id, role, content, created_at)
+             VALUES (?1, ?2, 'assistant', '', ?3)",
+            params![
+                assistant_message_id.clone(),
+                conversation_id.clone(),
+                now_unix_ts()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     let api_key = env::var("MINIMAX_API_KEY")
         .map_err(|_| "missing required environment variable: MINIMAX_API_KEY".to_string())?;
     let client = llm::minimax::MiniMaxClient::new(api_key, provider_runtime.base_url.clone());
-    let streamed = client
-        .chat_completion_stream_collect(&provider_runtime.model_id, &llm_messages)
-        .await
-        .map_err(|e| e.to_string())?;
+    let tool_defs = {
+        let tool_registry_state = app_handle.state::<ToolRegistryState>();
+        tool_registry_state.registry.get_tools_for_llm()
+    };
+    let mut final_assistant_content = String::new();
+    let mut paused_for_approval = false;
 
-    for delta in &streamed.deltas {
-        app_handle
-            .emit(
-                "chat-delta",
-                agent::ChatDeltaEvent {
-                    conversation_id: conversation_id.clone(),
-                    message_id: assistant_message_id.clone(),
-                    delta: delta.clone(),
-                },
+    for _step in 0..MAX_TOOL_LOOP_STEPS {
+        let turn_id = Uuid::new_v4().to_string();
+        {
+            let db_state = app_handle.state::<db::DbState>();
+            let conn = db_state.connection()?;
+            let now = now_unix_ts();
+            conn.execute(
+                "INSERT INTO agent_turn (id, message_id, provider_id, prompt_tokens, completion_tokens, created_at)
+                 VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
+                params![
+                    turn_id.clone(),
+                    assistant_message_id.clone(),
+                    provider_runtime.provider_id.clone(),
+                    now
+                ],
             )
             .map_err(|e| e.to_string())?;
+        }
+
+        let completion = client
+            .chat_completion_with_tools(&provider_runtime.model_id, &llm_messages, &tool_defs)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        match completion {
+            llm::minimax::ChatCompletionOutput::ToolCalls(tool_calls) => {
+                let mut continue_loop = true;
+                for tool_call in tool_calls {
+                    let tool_args: Value = serde_json::from_str(&tool_call.function_arguments)
+                        .map_err(|e| format!("failed to parse tool call arguments: {e}"))?;
+
+                    match tool_branch_for_name(&tool_call.function_name) {
+                        ToolBranch::NeedsApproval => {
+                            let approval_id = Uuid::new_v4().to_string();
+                            let now = now_unix_ts();
+                            {
+                                let db_state = app_handle.state::<db::DbState>();
+                                let conn = db_state.connection()?;
+                                conn.execute(
+                                    "INSERT INTO pending_approval (id, conversation_id, turn_id, action_type, payload_json, status, created_at)
+                                     VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+                                    params![
+                                        approval_id.clone(),
+                                        conversation_id.clone(),
+                                        turn_id.clone(),
+                                        tool_call.function_name.clone(),
+                                        tool_args.to_string(),
+                                        now
+                                    ],
+                                )
+                                .map_err(|e| e.to_string())?;
+                            }
+                            app_handle
+                                .emit(
+                                    "pending-approval",
+                                    agent::PendingApprovalEvent {
+                                        conversation_id: conversation_id.clone(),
+                                        message_id: assistant_message_id.clone(),
+                                        approval_id,
+                                        action_type: tool_call.function_name.clone(),
+                                        payload: tool_args.clone(),
+                                    },
+                                )
+                                .map_err(|e| e.to_string())?;
+                            llm_messages.push(llm::minimax::ChatMessage {
+                                role: "assistant".to_string(),
+                                content: format!(
+                                    "Tool call paused for approval: {}({})",
+                                    tool_call.function_name, tool_call.function_arguments
+                                ),
+                            });
+                            paused_for_approval = true;
+                            continue_loop = false;
+                            break;
+                        }
+                        ToolBranch::ExecuteImmediately => {
+                            let tool_result = {
+                                let tool_registry_state = app_handle.state::<ToolRegistryState>();
+                                tool_registry_state
+                                    .registry
+                                    .execute(&tool_call.function_name, tool_args.clone())
+                                    .await?
+                            };
+                            llm_messages.push(llm::minimax::ChatMessage {
+                                role: "assistant".to_string(),
+                                content: format!(
+                                    "Called tool {}({})",
+                                    tool_call.function_name, tool_call.function_arguments
+                                ),
+                            });
+                            llm_messages.push(llm::minimax::ChatMessage {
+                                role: "user".to_string(),
+                                content: format!(
+                                    "Tool result from {}: {}",
+                                    tool_call.function_name, tool_result
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                if !continue_loop {
+                    break;
+                }
+            }
+            llm::minimax::ChatCompletionOutput::Content(content) => {
+                if content.is_empty() {
+                    return Err("assistant response content was empty".to_string());
+                }
+                final_assistant_content = client
+                    .chat_completion_stream_with_callback(
+                        &provider_runtime.model_id,
+                        &llm_messages,
+                        |delta| {
+                            app_handle
+                                .emit(
+                                    "chat-delta",
+                                    agent::ChatDeltaEvent {
+                                        conversation_id: conversation_id.clone(),
+                                        message_id: assistant_message_id.clone(),
+                                        delta: delta.to_string(),
+                                    },
+                                )
+                                .map_err(|e| e.to_string())
+                        },
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                break;
+            }
+        }
+    }
+
+    if !paused_for_approval && final_assistant_content.is_empty() {
+        return Err(format!(
+            "agent turn reached max tool loop steps ({MAX_TOOL_LOOP_STEPS}) without final assistant content"
+        ));
     }
 
     {
@@ -150,25 +306,8 @@ async fn run_agent_turn(
         let conn = db_state.connection()?;
         let now = now_unix_ts();
         conn.execute(
-            "INSERT INTO message (id, conversation_id, role, content, created_at)
-             VALUES (?1, ?2, 'assistant', ?3, ?4)",
-            params![
-                assistant_message_id.clone(),
-                conversation_id.clone(),
-                streamed.collected_text.clone(),
-                now
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-        conn.execute(
-            "INSERT INTO agent_turn (id, message_id, provider_id, prompt_tokens, completion_tokens, created_at)
-             VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
-            params![
-                Uuid::new_v4().to_string(),
-                assistant_message_id.clone(),
-                provider_runtime.provider_id.clone(),
-                now
-            ],
+            "UPDATE message SET content = ?1 WHERE id = ?2",
+            params![final_assistant_content.clone(), assistant_message_id.clone()],
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
@@ -176,6 +315,10 @@ async fn run_agent_turn(
             params![now, conversation_id.clone()],
         )
         .map_err(|e| e.to_string())?;
+    }
+
+    if paused_for_approval {
+        return Ok(());
     }
 
     app_handle
@@ -287,6 +430,22 @@ mod tests {
         let err = super::select_provider_id(&conn)
             .expect_err("provider selection should fail when no provider exists");
         assert!(err.contains("no providers configured"));
+    }
+
+    #[test]
+    fn tool_branch_for_name_routes_approval_tools_to_pending_path() {
+        assert_eq!(
+            super::tool_branch_for_name("create_directory"),
+            super::ToolBranch::NeedsApproval
+        );
+        assert_eq!(
+            super::tool_branch_for_name("write_file"),
+            super::ToolBranch::NeedsApproval
+        );
+        assert_eq!(
+            super::tool_branch_for_name("web_search"),
+            super::ToolBranch::ExecuteImmediately
+        );
     }
 }
 
