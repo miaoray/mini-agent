@@ -5,6 +5,11 @@ pub mod tools;
 use rusqlite::Connection;
 use tauri::Manager;
 
+#[allow(dead_code)]
+pub struct ToolRegistryState {
+    registry: tools::ToolRegistry,
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -110,7 +115,12 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let db_state = db::init_db(app.handle())?;
+            let mut tool_registry = tools::ToolRegistry::new();
+            tools::register_default_tools(&mut tool_registry).map_err(std::io::Error::other)?;
             app.manage(db_state);
+            app.manage(ToolRegistryState {
+                registry: tool_registry,
+            });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

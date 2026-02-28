@@ -1,11 +1,13 @@
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::tools::{ToolDef, ToolImpl};
 
 const MAX_RESULTS: usize = 5;
 const DEFAULT_SNIPPET_CHARS: usize = 150;
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResult {
@@ -98,12 +100,14 @@ impl WebSearchProvider for DuckDuckGoProvider {
 
 pub struct WebSearchTool {
     provider: Arc<dyn WebSearchProvider>,
+    timeout: Duration,
 }
 
 impl WebSearchTool {
     pub fn new() -> Self {
         Self {
             provider: Arc::new(DuckDuckGoProvider),
+            timeout: DEFAULT_TIMEOUT,
         }
     }
 
@@ -126,7 +130,7 @@ impl WebSearchTool {
 impl ToolImpl for WebSearchTool {
     fn definition(&self) -> ToolDef {
         ToolDef {
-            id: "web-search".to_string(),
+            id: "web_search".to_string(),
             name: "web_search".to_string(),
             description: "Search the web for up-to-date information using DuckDuckGo".to_string(),
             parameters: json!({
@@ -146,19 +150,54 @@ impl ToolImpl for WebSearchTool {
     fn execute(&self, args: Value) -> BoxFuture<'_, Result<String, String>> {
         Box::pin(async move {
             let query = Self::parse_query(&args)?;
-            match self.provider.search(&query).await {
-                Ok(results) => Ok(format_search_results(&results, DEFAULT_SNIPPET_CHARS)),
-                Err(err) => Ok(format!(
-                    "Web search unavailable for query \"{query}\": {err}"
-                )),
-            }
+            let results = tokio::time::timeout(self.timeout, self.provider.search(&query))
+                .await
+                .map_err(|_| "web search timed out".to_string())??;
+            Ok(format_search_results(&results, DEFAULT_SNIPPET_CHARS))
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_search_results, SearchResult};
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use futures::future::BoxFuture;
+    use serde_json::json;
+
+    use super::{format_search_results, SearchResult, WebSearchProvider, WebSearchTool};
+    use crate::tools::ToolImpl;
+
+    struct ErrorProvider;
+    struct SlowProvider;
+
+    impl WebSearchProvider for ErrorProvider {
+        fn search<'a>(&'a self, _query: &'a str) -> BoxFuture<'a, Result<Vec<SearchResult>, String>> {
+            Box::pin(async { Err("provider failed".to_string()) })
+        }
+    }
+
+    impl WebSearchProvider for SlowProvider {
+        fn search<'a>(&'a self, _query: &'a str) -> BoxFuture<'a, Result<Vec<SearchResult>, String>> {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                Ok(vec![])
+            })
+        }
+    }
+
+    fn run_on_tokio<F>(future: F) -> Result<String, String>
+    where
+        F: Future<Output = Result<String, String>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("tokio test runtime should build");
+        runtime.block_on(future)
+    }
 
     #[test]
     fn format_search_results_handles_empty_results() {
@@ -213,5 +252,34 @@ mod tests {
 
         assert_eq!(lines.len(), 5);
         assert!(lines[4].starts_with("5. Title 5 - "));
+    }
+
+    #[test]
+    fn execute_returns_err_for_missing_query() {
+        let tool = WebSearchTool::new();
+        let result = run_on_tokio(tool.execute(json!({})));
+        assert_eq!(result, Err("missing required argument: query".to_string()));
+    }
+
+    #[test]
+    fn execute_returns_err_when_provider_fails() {
+        let tool = WebSearchTool {
+            provider: Arc::new(ErrorProvider),
+            timeout: Duration::from_millis(50),
+        };
+
+        let result = run_on_tokio(tool.execute(json!({ "query": "rust" })));
+        assert_eq!(result, Err("provider failed".to_string()));
+    }
+
+    #[test]
+    fn execute_returns_err_when_search_times_out() {
+        let tool = WebSearchTool {
+            provider: Arc::new(SlowProvider),
+            timeout: Duration::from_millis(50),
+        };
+
+        let result = run_on_tokio(tool.execute(json!({ "query": "rust" })));
+        assert_eq!(result, Err("web search timed out".to_string()));
     }
 }
