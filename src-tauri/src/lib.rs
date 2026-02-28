@@ -30,6 +30,7 @@ pub struct ToolRegistryState {
 }
 
 const MAX_TOOL_LOOP_STEPS: usize = 6;
+const CHAT_DELTA_MAX_CHARS: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolBranch {
@@ -42,6 +43,88 @@ fn tool_branch_for_name(name: &str) -> ToolBranch {
         "create_directory" | "write_file" => ToolBranch::NeedsApproval,
         _ => ToolBranch::ExecuteImmediately,
     }
+}
+
+fn chunk_assistant_content(content: &str, max_chars_per_chunk: usize) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+
+    let max_chars = max_chars_per_chunk.max(1);
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_is_whitespace: Option<bool> = None;
+
+    for ch in content.chars() {
+        let is_whitespace = ch.is_whitespace();
+        match current_is_whitespace {
+            None => {
+                current.push(ch);
+                current_is_whitespace = Some(is_whitespace);
+            }
+            Some(kind) if kind == is_whitespace => {
+                current.push(ch);
+            }
+            Some(_) => {
+                tokens.push(current);
+                current = String::new();
+                current.push(ch);
+                current_is_whitespace = Some(is_whitespace);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    let mut chunks: Vec<String> = Vec::new();
+    let mut chunk = String::new();
+    let mut chunk_len = 0usize;
+
+    for token in tokens {
+        let token_len = token.chars().count();
+        if token_len > max_chars {
+            if !chunk.is_empty() {
+                chunks.push(chunk);
+                chunk = String::new();
+                chunk_len = 0;
+            }
+
+            let mut piece = String::new();
+            let mut piece_len = 0usize;
+            for ch in token.chars() {
+                if piece_len == max_chars {
+                    chunks.push(piece);
+                    piece = String::new();
+                    piece_len = 0;
+                }
+                piece.push(ch);
+                piece_len += 1;
+            }
+            if !piece.is_empty() {
+                chunks.push(piece);
+            }
+            continue;
+        }
+
+        if chunk_len + token_len <= max_chars {
+            chunk.push_str(&token);
+            chunk_len += token_len;
+        } else {
+            if !chunk.is_empty() {
+                chunks.push(chunk);
+            }
+            chunk = token;
+            chunk_len = token_len;
+        }
+    }
+
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+
+    chunks
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -271,16 +354,18 @@ async fn run_agent_turn(
                 if content.is_empty() {
                     return Err("assistant response content was empty".to_string());
                 }
-                app_handle
-                    .emit(
-                        "chat-delta",
-                        agent::ChatDeltaEvent {
-                            conversation_id: conversation_id.clone(),
-                            message_id: assistant_message_id.clone(),
-                            delta: content.clone(),
-                        },
-                    )
-                    .map_err(|e| e.to_string())?;
+                for delta in chunk_assistant_content(&content, CHAT_DELTA_MAX_CHARS) {
+                    app_handle
+                        .emit(
+                            "chat-delta",
+                            agent::ChatDeltaEvent {
+                                conversation_id: conversation_id.clone(),
+                                message_id: assistant_message_id.clone(),
+                                delta,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
                 final_assistant_content = content;
                 break;
             }
@@ -438,6 +523,16 @@ mod tests {
             super::tool_branch_for_name("web_search"),
             super::ToolBranch::ExecuteImmediately
         );
+    }
+
+    #[test]
+    fn chunk_assistant_content_returns_non_empty_chunks_and_reconstructs_original() {
+        let content = "Hello   world!\nThis is a long-ish response with punctuation...";
+        let chunks = super::chunk_assistant_content(content, 8);
+
+        assert!(!chunks.is_empty(), "expected at least one chunk");
+        assert!(chunks.iter().all(|c| !c.is_empty()));
+        assert_eq!(chunks.join(""), content);
     }
 }
 
