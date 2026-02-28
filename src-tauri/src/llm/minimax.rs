@@ -1,18 +1,20 @@
 use std::env;
 use std::fmt::{Display, Formatter};
+use std::time::Duration;
 
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const CHAT_COMPLETIONS_PATH: &str = "chat/completions";
+const DEFAULT_HTTP_TIMEOUT_SECONDS: u64 = 60;
 
 #[derive(Debug)]
 pub enum MiniMaxError {
     MissingEnvVar(&'static str),
     Http(reqwest::Error),
     Json(serde_json::Error),
-    InvalidUtf8(std::string::FromUtf8Error),
+    InvalidUtf8(String),
     MissingResponseContent,
     UnexpectedStatus(u16, String),
 }
@@ -46,12 +48,6 @@ impl From<serde_json::Error> for MiniMaxError {
     }
 }
 
-impl From<std::string::FromUtf8Error> for MiniMaxError {
-    fn from(value: std::string::FromUtf8Error) -> Self {
-        Self::InvalidUtf8(value)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -79,8 +75,12 @@ impl MiniMaxClient {
     }
 
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        let http_client = Client::builder()
+            .timeout(Duration::from_secs(DEFAULT_HTTP_TIMEOUT_SECONDS))
+            .build()
+            .expect("failed to build reqwest client");
         Self {
-            http_client: Client::new(),
+            http_client,
             api_key: api_key.into(),
             base_url: base_url.into(),
         }
@@ -111,29 +111,16 @@ impl MiniMaxClient {
     ) -> Result<StreamedResponse, MiniMaxError> {
         let response = self.send_chat_completion_request(model, messages, true).await?;
         let mut stream = response.bytes_stream();
-        let mut pending = String::new();
+        let mut utf8_pending = Vec::new();
+        let mut line_pending = String::new();
         let mut result = StreamedResponse::default();
 
         while let Some(chunk) = stream.next().await {
             let bytes = chunk?;
-            pending.push_str(&String::from_utf8(bytes.to_vec())?);
-
-            while let Some(newline_idx) = pending.find('\n') {
-                let line = pending[..newline_idx].to_string();
-                pending = pending[newline_idx + 1..].to_string();
-                if let Some(delta) = parse_sse_delta_line(&line)? {
-                    result.collected_text.push_str(&delta);
-                    result.deltas.push(delta);
-                }
-            }
+            process_sse_chunk(&bytes, &mut utf8_pending, &mut line_pending, &mut result)?;
         }
 
-        if !pending.trim().is_empty() {
-            if let Some(delta) = parse_sse_delta_line(&pending)? {
-                result.collected_text.push_str(&delta);
-                result.deltas.push(delta);
-            }
-        }
+        finalize_sse_stream(&mut utf8_pending, &mut line_pending, &mut result)?;
 
         Ok(result)
     }
@@ -191,6 +178,108 @@ pub fn parse_sse_delta_line(line: &str) -> Result<Option<String>, MiniMaxError> 
         .find_map(|choice| choice.delta.and_then(|delta| delta.content)))
 }
 
+#[cfg(test)]
+fn collect_streamed_response_from_chunks(
+    chunks: Vec<Vec<u8>>,
+) -> Result<StreamedResponse, MiniMaxError> {
+    let mut utf8_pending = Vec::new();
+    let mut line_pending = String::new();
+    let mut result = StreamedResponse::default();
+
+    for chunk in chunks {
+        process_sse_chunk(&chunk, &mut utf8_pending, &mut line_pending, &mut result)?;
+    }
+
+    finalize_sse_stream(&mut utf8_pending, &mut line_pending, &mut result)?;
+    Ok(result)
+}
+
+fn process_sse_chunk(
+    chunk: &[u8],
+    utf8_pending: &mut Vec<u8>,
+    line_pending: &mut String,
+    result: &mut StreamedResponse,
+) -> Result<(), MiniMaxError> {
+    let decoded = decode_complete_utf8(chunk, utf8_pending, false)?;
+    append_decoded_text_and_parse_lines(&decoded, line_pending, result)
+}
+
+fn finalize_sse_stream(
+    utf8_pending: &mut Vec<u8>,
+    line_pending: &mut String,
+    result: &mut StreamedResponse,
+) -> Result<(), MiniMaxError> {
+    let decoded_tail = decode_complete_utf8(&[], utf8_pending, true)?;
+    append_decoded_text_and_parse_lines(&decoded_tail, line_pending, result)?;
+
+    if !line_pending.trim().is_empty() {
+        if let Some(delta) = parse_sse_delta_line(line_pending)? {
+            result.collected_text.push_str(&delta);
+            result.deltas.push(delta);
+        }
+    }
+    line_pending.clear();
+
+    Ok(())
+}
+
+fn append_decoded_text_and_parse_lines(
+    decoded: &str,
+    line_pending: &mut String,
+    result: &mut StreamedResponse,
+) -> Result<(), MiniMaxError> {
+    line_pending.push_str(decoded);
+
+    while let Some(newline_idx) = line_pending.find('\n') {
+        let line = line_pending[..newline_idx].to_string();
+        line_pending.drain(..=newline_idx);
+
+        if let Some(delta) = parse_sse_delta_line(&line)? {
+            result.collected_text.push_str(&delta);
+            result.deltas.push(delta);
+        }
+    }
+
+    Ok(())
+}
+
+fn decode_complete_utf8(
+    chunk: &[u8],
+    utf8_pending: &mut Vec<u8>,
+    flush_tail: bool,
+) -> Result<String, MiniMaxError> {
+    utf8_pending.extend_from_slice(chunk);
+    if utf8_pending.is_empty() {
+        return Ok(String::new());
+    }
+
+    match std::str::from_utf8(utf8_pending) {
+        Ok(decoded) => {
+            let output = decoded.to_string();
+            utf8_pending.clear();
+            Ok(output)
+        }
+        Err(err) => {
+            let valid_up_to = err.valid_up_to();
+            let mut output = String::new();
+
+            if valid_up_to > 0 {
+                let valid_prefix = std::str::from_utf8(&utf8_pending[..valid_up_to])
+                    .expect("utf-8 prefix should always be valid");
+                output.push_str(valid_prefix);
+                let trailing = utf8_pending[valid_up_to..].to_vec();
+                *utf8_pending = trailing;
+            }
+
+            if err.error_len().is_none() && !flush_tail {
+                return Ok(output);
+            }
+
+            Err(MiniMaxError::InvalidUtf8(err.to_string()))
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct OpenAiChatRequest<'a> {
     model: &'a str,
@@ -234,7 +323,7 @@ mod tests {
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{ChatMessage, MiniMaxClient};
+    use super::{collect_streamed_response_from_chunks, ChatMessage, MiniMaxClient};
 
     #[tokio::test]
     async fn parses_openai_compatible_response() {
@@ -323,5 +412,20 @@ mod tests {
 
         assert_eq!(streamed.deltas, vec!["Hello".to_string(), " world".to_string()]);
         assert_eq!(streamed.collected_text, "Hello world");
+    }
+
+    #[test]
+    fn collects_split_multibyte_utf8_chunks() {
+        let chunks = vec![
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"\xE4".to_vec(),
+            b"\xBD\xA0\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\xE5\xA5".to_vec(),
+            b"\xBD\"}}]}\n\ndata: [DONE]\n\n".to_vec(),
+        ];
+
+        let streamed = collect_streamed_response_from_chunks(chunks)
+            .expect("split UTF-8 chunks should decode and parse correctly");
+
+        assert_eq!(streamed.deltas, vec!["你".to_string(), "好".to_string()]);
+        assert_eq!(streamed.collected_text, "你好");
     }
 }
