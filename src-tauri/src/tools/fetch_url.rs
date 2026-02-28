@@ -71,7 +71,7 @@ async fn fetch_url_with_client(
     allow_private_hosts: bool,
 ) -> Result<String, String> {
     let parsed_url = reqwest::Url::parse(raw_url).map_err(|err| format!("invalid url: {err}"))?;
-    validate_url_target(&parsed_url, allow_private_hosts)?;
+    validate_url_target(&parsed_url, allow_private_hosts).await?;
 
     let response = client
         .get(parsed_url)
@@ -102,7 +102,21 @@ async fn fetch_url_with_client(
     Ok(format!("Fetched URL content summary: {summary}"))
 }
 
-fn validate_url_target(url: &reqwest::Url, allow_private_hosts: bool) -> Result<(), String> {
+async fn validate_url_target(url: &reqwest::Url, allow_private_hosts: bool) -> Result<(), String> {
+    validate_url_target_with_resolver(url, allow_private_hosts, |host, port| {
+        Box::pin(resolve_host_ips(host.to_string(), port))
+    })
+    .await
+}
+
+async fn validate_url_target_with_resolver<F>(
+    url: &reqwest::Url,
+    allow_private_hosts: bool,
+    resolver: F,
+) -> Result<(), String>
+where
+    F: Fn(&str, u16) -> BoxFuture<'static, Result<Vec<IpAddr>, String>>,
+{
     match url.scheme() {
         "http" | "https" => {}
         _ => return Err("url scheme must be http or https".to_string()),
@@ -118,8 +132,32 @@ fn validate_url_target(url: &reqwest::Url, allow_private_hosts: bool) -> Result<
     if is_blocked_host(host) {
         return Err("url host is not allowed".to_string());
     }
+    if !is_ip_literal(host) {
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| "url must include a valid host".to_string())?;
+        let resolved_ips = resolver(host, port).await?;
+        if resolved_ips.into_iter().any(is_blocked_ip) {
+            return Err("url host is not allowed".to_string());
+        }
+    }
 
     Ok(())
+}
+
+async fn resolve_host_ips(host: String, port: u16) -> Result<Vec<IpAddr>, String> {
+    let resolved = tokio::net::lookup_host((host.as_str(), port))
+        .await
+        .map_err(|err| format!("failed to resolve host: {err}"))?;
+    Ok(resolved.map(|socket_addr| socket_addr.ip()).collect())
+}
+
+fn is_ip_literal(host: &str) -> bool {
+    let host_for_ip_parse = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    host_for_ip_parse.parse::<IpAddr>().is_ok()
 }
 
 fn is_blocked_host(host: &str) -> bool {
@@ -136,6 +174,13 @@ fn is_blocked_host(host: &str) -> bool {
         Err(_) => return false,
     };
 
+    match ip {
+        IpAddr::V4(v4) => is_blocked_ipv4(v4),
+        IpAddr::V6(v6) => is_blocked_ipv6(v6),
+    }
+}
+
+fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_ipv4(v4),
         IpAddr::V6(v6) => is_blocked_ipv6(v6),
@@ -160,6 +205,10 @@ fn is_blocked_ipv4(addr: Ipv4Addr) -> bool {
 }
 
 fn is_blocked_ipv6(addr: Ipv6Addr) -> bool {
+    if let Some(mapped) = addr.to_ipv4_mapped() {
+        return is_blocked_ipv4(mapped);
+    }
+
     if addr.is_loopback() || addr.is_unspecified() {
         return true;
     }
@@ -224,7 +273,10 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{build_fetch_client, fetch_url_with_client, FetchUrlTool, MAX_RESPONSE_BYTES};
+    use super::{
+        build_fetch_client, fetch_url_with_client, validate_url_target_with_resolver, FetchUrlTool,
+        MAX_RESPONSE_BYTES,
+    };
     use crate::tools::ToolImpl;
 
     #[tokio::test]
@@ -284,6 +336,7 @@ mod tests {
             "http://[fc00::1]/",
             "http://[fe80::1]/",
             "http://[ff02::1]/",
+            "http://[::ffff:127.0.0.1]/",
         ];
 
         for url in blocked_urls {
@@ -294,6 +347,21 @@ mod tests {
                 "expected SSRF block error for {url}, got: {err}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn fetch_url_rejects_hostname_when_dns_resolves_to_private_ip() {
+        let parsed = reqwest::Url::parse("https://blocked.test/resource")
+            .expect("test URL should parse successfully");
+        let result = validate_url_target_with_resolver(&parsed, false, |_host, _port| {
+            Box::pin(async { Ok(vec![std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 5))]) })
+        })
+        .await;
+        let err = result.expect_err("expected SSRF block for private DNS result");
+        assert!(
+            err.contains("url host is not allowed"),
+            "expected SSRF block error, got: {err}"
+        );
     }
 
     #[tokio::test]
