@@ -46,6 +46,48 @@
   justify-content: center;
 }
 
+.approval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(720px, 90vw);
+  margin: 0 auto 16px auto;
+  text-align: left;
+}
+
+.approval-card {
+  border: 1px solid #d0d0d0;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.approval-title {
+  margin: 0 0 6px 0;
+  font-weight: 600;
+}
+
+.approval-path {
+  margin: 0 0 8px 0;
+  word-break: break-word;
+}
+
+.approval-preview {
+  margin: 0 0 10px 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #f1f1f1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
 a {
   font-weight: 500;
   color: #646cff;
@@ -109,6 +151,15 @@ button {
   button {
     color: #ffffff;
     background-color: #0f0f0f98;
+  }
+
+  .approval-card {
+    border-color: #4a4a4a;
+    background: #1f1f1f;
+  }
+
+  .approval-preview {
+    background: #2c2c2c;
   }
   button:active {
     background-color: #0f0f0f69;

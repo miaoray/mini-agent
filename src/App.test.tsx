@@ -57,6 +57,8 @@ test("filters stream events by active turn ids", async () => {
     expect(listeners.has("chat-delta")).toBe(true);
     expect(listeners.has("chat-done")).toBe(true);
     expect(listeners.has("chat-error")).toBe(true);
+    expect(listeners.has("pending-approval")).toBe(true);
+    expect(listeners.has("approval-resolved")).toBe(true);
   });
 
   fireEvent.change(screen.getByPlaceholderText("Enter a name..."), {
@@ -112,6 +114,8 @@ test("handles chat-error by stopping stream and showing message", async () => {
     expect(listeners.has("chat-delta")).toBe(true);
     expect(listeners.has("chat-done")).toBe(true);
     expect(listeners.has("chat-error")).toBe(true);
+    expect(listeners.has("pending-approval")).toBe(true);
+    expect(listeners.has("approval-resolved")).toBe(true);
   });
 
   fireEvent.change(screen.getByPlaceholderText("Enter a name..."), {
@@ -144,5 +148,73 @@ test("handles chat-error by stopping stream and showing message", async () => {
   await waitFor(() => {
     expect(screen.queryByText("Streaming...")).not.toBeInTheDocument();
     expect(screen.getByTestId("streamed-text")).toHaveTextContent("Error: model failed");
+  });
+});
+
+test("renders pending approval card and calls approve command", async () => {
+  invokeMock.mockImplementation(async (command: string) => {
+    if (command === "create_conversation") {
+      return "conv-3";
+    }
+    if (command === "send_message") {
+      return "msg-3";
+    }
+    if (command === "approve_action") {
+      return null;
+    }
+    return "";
+  });
+  render(<App />);
+  await waitFor(() => {
+    expect(listeners.has("pending-approval")).toBe(true);
+    expect(listeners.has("approval-resolved")).toBe(true);
+  });
+
+  fireEvent.change(screen.getByPlaceholderText("Enter a name..."), {
+    target: { value: "make files" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Greet" }));
+
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("send_message", {
+      conversation_id: "conv-3",
+      content: "make files",
+    });
+  });
+
+  emit("pending-approval", {
+    conversation_id: "conv-3",
+    message_id: "msg-3",
+    approval_id: "approval-1",
+    action_type: "write_file",
+    payload: {
+      path: "notes/todo.txt",
+      content: "first line\nsecond line",
+    },
+  });
+
+  await waitFor(() => {
+    expect(screen.getByTestId("approval-card-approval-1")).toBeInTheDocument();
+    expect(screen.getByText("Path: notes/todo.txt")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Accept" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("approve_action", {
+      approval_id: "approval-1",
+    });
+  });
+
+  emit("approval-resolved", {
+    conversation_id: "conv-3",
+    message_id: "msg-3",
+    approval_id: "approval-1",
+    status: "approved",
+  });
+
+  await waitFor(() => {
+    expect(screen.queryByTestId("approval-card-approval-1")).not.toBeInTheDocument();
   });
 });

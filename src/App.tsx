@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import ApprovalCard from "./components/ApprovalCard";
 import "./App.css";
 
 type TurnEventPayload = {
@@ -13,6 +14,28 @@ type TurnEventPayload = {
 
 type ChatDeltaPayload = TurnEventPayload & { delta?: string };
 type ChatErrorPayload = TurnEventPayload & { message?: string };
+type PendingApprovalPayload = TurnEventPayload & {
+  approval_id?: string;
+  approvalId?: string;
+  action_type?: string;
+  actionType?: string;
+  payload?: {
+    path?: string;
+    content?: string;
+  };
+};
+type ApprovalResolvedPayload = TurnEventPayload & {
+  approval_id?: string;
+  approvalId?: string;
+  status?: string;
+};
+
+type ApprovalCardState = {
+  approvalId: string;
+  actionType: string;
+  path: string;
+  content?: string;
+};
 
 function payloadConversationId(payload: TurnEventPayload | null | undefined) {
   return payload?.conversationId ?? payload?.conversation_id ?? "";
@@ -20,6 +43,14 @@ function payloadConversationId(payload: TurnEventPayload | null | undefined) {
 
 function payloadMessageId(payload: TurnEventPayload | null | undefined) {
   return payload?.messageId ?? payload?.message_id ?? "";
+}
+
+function payloadApprovalId(payload: PendingApprovalPayload | ApprovalResolvedPayload | null | undefined) {
+  return payload?.approvalId ?? payload?.approval_id ?? "";
+}
+
+function payloadActionType(payload: PendingApprovalPayload | null | undefined) {
+  return payload?.actionType ?? payload?.action_type ?? "";
 }
 
 function App() {
@@ -30,6 +61,8 @@ function App() {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<ApprovalCardState[]>([]);
+  const [approvalBusy, setApprovalBusy] = useState<Record<string, boolean>>({});
   const activeConversationIdRef = useRef<string | null>(null);
   const activeMessageIdRef = useRef<string | null>(null);
 
@@ -37,6 +70,8 @@ function App() {
     let unlistenDelta: UnlistenFn | null = null;
     let unlistenDone: UnlistenFn | null = null;
     let unlistenError: UnlistenFn | null = null;
+    let unlistenPendingApproval: UnlistenFn | null = null;
+    let unlistenApprovalResolved: UnlistenFn | null = null;
     let mounted = true;
 
     const setupListeners = async () => {
@@ -90,6 +125,52 @@ function App() {
           setActiveMessageId(null);
           setStreamedText(`Error: ${payload?.message ?? "Unknown error"}`);
         });
+        unlistenPendingApproval = await listen<PendingApprovalPayload>(
+          "pending-approval",
+          (event) => {
+            if (!mounted) {
+              return;
+            }
+            const payload = event.payload;
+            const approvalId = payloadApprovalId(payload);
+            if (!approvalId) {
+              return;
+            }
+            const actionType = payloadActionType(payload);
+            const path = payload?.payload?.path ?? "";
+            const content = payload?.payload?.content;
+            setPendingApprovals((previous) => {
+              const next = previous.filter((item) => item.approvalId !== approvalId);
+              next.push({
+                approvalId,
+                actionType,
+                path,
+                content,
+              });
+              return next;
+            });
+          },
+        );
+        unlistenApprovalResolved = await listen<ApprovalResolvedPayload>(
+          "approval-resolved",
+          (event) => {
+            if (!mounted) {
+              return;
+            }
+            const approvalId = payloadApprovalId(event.payload);
+            if (!approvalId) {
+              return;
+            }
+            setPendingApprovals((previous) =>
+              previous.filter((item) => item.approvalId !== approvalId),
+            );
+            setApprovalBusy((previous) => {
+              const next = { ...previous };
+              delete next[approvalId];
+              return next;
+            });
+          },
+        );
       } catch {
         // Ignore listener setup in non-Tauri environments (e.g. browser tests).
       }
@@ -107,6 +188,12 @@ function App() {
       }
       if (unlistenError) {
         unlistenError();
+      }
+      if (unlistenPendingApproval) {
+        unlistenPendingApproval();
+      }
+      if (unlistenApprovalResolved) {
+        unlistenApprovalResolved();
       }
     };
   }, []);
@@ -132,6 +219,36 @@ function App() {
     setActiveMessageId(nextMessageId);
     setIsStreaming(true);
     setGreetMsg("Message sent");
+  }
+
+  async function approvePending(approvalId: string) {
+    setApprovalBusy((previous) => ({ ...previous, [approvalId]: true }));
+    try {
+      await invoke("approve_action", { approval_id: approvalId });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      setGreetMsg(`Error: ${message}`);
+      setApprovalBusy((previous) => {
+        const next = { ...previous };
+        delete next[approvalId];
+        return next;
+      });
+    }
+  }
+
+  async function rejectPending(approvalId: string) {
+    setApprovalBusy((previous) => ({ ...previous, [approvalId]: true }));
+    try {
+      await invoke("reject_action", { approval_id: approvalId });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      setGreetMsg(`Error: ${message}`);
+      setApprovalBusy((previous) => {
+        const next = { ...previous };
+        delete next[approvalId];
+        return next;
+      });
+    }
   }
 
   return (
@@ -171,6 +288,22 @@ function App() {
         <button type="submit">Greet</button>
       </form>
       <p>{greetMsg}</p>
+      {pendingApprovals.length > 0 ? (
+        <section className="approval-list">
+          {pendingApprovals.map((approval) => (
+            <ApprovalCard
+              key={approval.approvalId}
+              approvalId={approval.approvalId}
+              actionType={approval.actionType}
+              path={approval.path}
+              content={approval.content}
+              busy={approvalBusy[approval.approvalId] === true}
+              onApprove={approvePending}
+              onReject={rejectPending}
+            />
+          ))}
+        </section>
+      ) : null}
       <p data-testid="streamed-text">{streamedText}</p>
       {isStreaming ? <p>Streaming...</p> : null}
     </main>

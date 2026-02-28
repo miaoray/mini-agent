@@ -1,4 +1,5 @@
 mod agent;
+mod approval;
 mod db;
 pub mod llm;
 pub mod tools;
@@ -208,6 +209,37 @@ async fn send_message(
     });
 
     Ok(assistant_message_id)
+}
+
+#[tauri::command]
+fn approve_action(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, db::DbState>,
+    approval_id: String,
+) -> Result<(), String> {
+    let base_dir = std::env::current_dir().map_err(|e| e.to_string())?;
+    let resolved_event = {
+        let conn = state.connection()?;
+        approval::approve_action(&conn, &approval_id, &base_dir)?
+    };
+
+    app.emit("approval-resolved", resolved_event)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn reject_action(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, db::DbState>,
+    approval_id: String,
+) -> Result<(), String> {
+    let resolved_event = {
+        let conn = state.connection()?;
+        approval::reject_action(&conn, &approval_id)?
+    };
+
+    app.emit("approval-resolved", resolved_event)
+        .map_err(|e| e.to_string())
 }
 
 async fn run_agent_turn(
@@ -555,7 +587,9 @@ pub fn run() {
             create_conversation,
             list_conversations,
             get_conversation,
-            send_message
+            send_message,
+            approve_action,
+            reject_action
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
