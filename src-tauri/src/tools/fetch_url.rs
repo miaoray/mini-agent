@@ -2,7 +2,7 @@ use futures::future::BoxFuture;
 use reqwest::header::CONTENT_TYPE;
 use scraper::{Html, Selector};
 use serde_json::{json, Value};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use crate::tools::{ToolDef, ToolImpl};
@@ -12,6 +12,12 @@ const REQUEST_TIMEOUT_SECONDS: u64 = 10;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 pub struct FetchUrlTool;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ValidatedDnsTarget {
+    host: String,
+    addrs: Vec<SocketAddr>,
+}
 
 impl FetchUrlTool {
     pub fn new() -> Self {
@@ -58,11 +64,7 @@ impl ToolImpl for FetchUrlTool {
 }
 
 fn build_fetch_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|err| err.to_string())
+    build_bound_fetch_client(None)
 }
 
 async fn fetch_url_with_client(
@@ -71,9 +73,19 @@ async fn fetch_url_with_client(
     allow_private_hosts: bool,
 ) -> Result<String, String> {
     let parsed_url = reqwest::Url::parse(raw_url).map_err(|err| format!("invalid url: {err}"))?;
-    validate_url_target(&parsed_url, allow_private_hosts).await?;
+    let validated_target = validate_url_target(&parsed_url, allow_private_hosts).await?;
 
-    let response = client
+    let bound_client;
+    let request_client = if allow_private_hosts {
+        client
+    } else if let Some(target) = validated_target.as_ref() {
+        bound_client = build_bound_fetch_client(Some(target))?;
+        &bound_client
+    } else {
+        client
+    };
+
+    let response = request_client
         .get(parsed_url)
         .send()
         .await
@@ -102,9 +114,12 @@ async fn fetch_url_with_client(
     Ok(format!("Fetched URL content summary: {summary}"))
 }
 
-async fn validate_url_target(url: &reqwest::Url, allow_private_hosts: bool) -> Result<(), String> {
+async fn validate_url_target(
+    url: &reqwest::Url,
+    allow_private_hosts: bool,
+) -> Result<Option<ValidatedDnsTarget>, String> {
     validate_url_target_with_resolver(url, allow_private_hosts, |host, port| {
-        Box::pin(resolve_host_ips(host.to_string(), port))
+        Box::pin(resolve_host_socket_addrs(host.to_string(), port))
     })
     .await
 }
@@ -113,9 +128,9 @@ async fn validate_url_target_with_resolver<F>(
     url: &reqwest::Url,
     allow_private_hosts: bool,
     resolver: F,
-) -> Result<(), String>
+) -> Result<Option<ValidatedDnsTarget>, String>
 where
-    F: Fn(&str, u16) -> BoxFuture<'static, Result<Vec<IpAddr>, String>>,
+    F: Fn(&str, u16) -> BoxFuture<'static, Result<Vec<SocketAddr>, String>>,
 {
     match url.scheme() {
         "http" | "https" => {}
@@ -123,7 +138,7 @@ where
     }
 
     if allow_private_hosts {
-        return Ok(());
+        return Ok(None);
     }
 
     let host = url
@@ -136,20 +151,44 @@ where
         let port = url
             .port_or_known_default()
             .ok_or_else(|| "url must include a valid host".to_string())?;
-        let resolved_ips = resolver(host, port).await?;
-        if resolved_ips.into_iter().any(is_blocked_ip) {
+        let resolved_addrs = resolver(host, port).await?;
+        if resolved_addrs.is_empty() {
+            return Err("failed to resolve host: no addresses found".to_string());
+        }
+        if resolved_addrs.iter().any(|addr| is_blocked_ip(addr.ip())) {
             return Err("url host is not allowed".to_string());
         }
+        return Ok(Some(ValidatedDnsTarget {
+            host: host.to_string(),
+            addrs: resolved_addrs,
+        }));
     }
 
-    Ok(())
+    Ok(None)
 }
 
-async fn resolve_host_ips(host: String, port: u16) -> Result<Vec<IpAddr>, String> {
+async fn resolve_host_socket_addrs(host: String, port: u16) -> Result<Vec<SocketAddr>, String> {
     let resolved = tokio::net::lookup_host((host.as_str(), port))
         .await
         .map_err(|err| format!("failed to resolve host: {err}"))?;
-    Ok(resolved.map(|socket_addr| socket_addr.ip()).collect())
+    Ok(resolved.collect())
+}
+
+fn build_bound_fetch_client(target: Option<&ValidatedDnsTarget>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
+        .redirect(reqwest::redirect::Policy::none());
+
+    if let Some(target) = target {
+        if target.addrs.is_empty() {
+            return Err("failed to resolve host: no addresses found".to_string());
+        }
+        for addr in &target.addrs {
+            builder = builder.resolve(&target.host, *addr);
+        }
+    }
+
+    builder.build().map_err(|err| err.to_string())
 }
 
 fn is_ip_literal(host: &str) -> bool {
@@ -269,13 +308,15 @@ fn truncate_chars(input: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
-        build_fetch_client, fetch_url_with_client, validate_url_target_with_resolver, FetchUrlTool,
-        MAX_RESPONSE_BYTES,
+        build_bound_fetch_client, build_fetch_client, fetch_url_with_client,
+        validate_url_target_with_resolver, FetchUrlTool, ValidatedDnsTarget, MAX_RESPONSE_BYTES,
     };
     use crate::tools::ToolImpl;
 
@@ -354,7 +395,12 @@ mod tests {
         let parsed = reqwest::Url::parse("https://blocked.test/resource")
             .expect("test URL should parse successfully");
         let result = validate_url_target_with_resolver(&parsed, false, |_host, _port| {
-            Box::pin(async { Ok(vec![std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 5))]) })
+            Box::pin(async {
+                Ok(vec![SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+                    443,
+                )])
+            })
         })
         .await;
         let err = result.expect_err("expected SSRF block for private DNS result");
@@ -362,6 +408,43 @@ mod tests {
             err.contains("url host is not allowed"),
             "expected SSRF block error, got: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn validate_url_target_returns_resolved_public_socket_addrs_for_hostname() {
+        let parsed = reqwest::Url::parse("https://allowed.test/resource")
+            .expect("test URL should parse successfully");
+        let result = validate_url_target_with_resolver(&parsed, false, |_host, _port| {
+            Box::pin(async {
+                Ok(vec![SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                    443,
+                )])
+            })
+        })
+        .await
+        .expect("expected successful validation");
+
+        assert_eq!(
+            result,
+            Some(ValidatedDnsTarget {
+                host: "allowed.test".to_string(),
+                addrs: vec![SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                    443
+                )],
+            })
+        );
+    }
+
+    #[test]
+    fn build_bound_fetch_client_rejects_empty_resolved_address_list() {
+        let err = build_bound_fetch_client(Some(&ValidatedDnsTarget {
+            host: "example.com".to_string(),
+            addrs: Vec::new(),
+        }))
+        .expect_err("expected empty bound addrs to be rejected");
+        assert!(err.contains("failed to resolve host"));
     }
 
     #[tokio::test]
