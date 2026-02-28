@@ -5,5 +5,6 @@ import App from "./App";
 
 test("renders app heading", () => {
   render(<App />);
-  expect(screen.getByText("Welcome to Tauri + React")).toBeInTheDocument();
+  expect(screen.getByRole("main")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
 });
