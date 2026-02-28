@@ -2,7 +2,7 @@ use futures::future::BoxFuture;
 use reqwest::header::CONTENT_TYPE;
 use scraper::{Html, Selector};
 use serde_json::{json, Value};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use crate::tools::{ToolDef, ToolImpl};
@@ -50,14 +50,19 @@ impl ToolImpl for FetchUrlTool {
                 return Err("missing required argument: url".to_string());
             }
 
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
-                .build()
-                .map_err(|err| err.to_string())?;
+            let client = build_fetch_client()?;
 
             fetch_url_with_client(url, &client, false).await
         })
     }
+}
+
+fn build_fetch_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| err.to_string())
 }
 
 async fn fetch_url_with_client(
@@ -72,9 +77,13 @@ async fn fetch_url_with_client(
         .get(parsed_url)
         .send()
         .await
-        .map_err(|err| err.to_string())?
-        .error_for_status()
         .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "request failed with HTTP status {}",
+            response.status()
+        ));
+    }
 
     let is_html = response
         .headers()
@@ -118,14 +127,18 @@ fn is_blocked_host(host: &str) -> bool {
         return true;
     }
 
-    let ip = match host.parse::<IpAddr>() {
+    let host_for_ip_parse = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    let ip = match host_for_ip_parse.parse::<IpAddr>() {
         Ok(ip) => ip,
         Err(_) => return false,
     };
 
     match ip {
         IpAddr::V4(v4) => is_blocked_ipv4(v4),
-        IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        IpAddr::V6(v6) => is_blocked_ipv6(v6),
     }
 }
 
@@ -137,7 +150,24 @@ fn is_blocked_ipv4(addr: Ipv4Addr) -> bool {
     let [a, b, ..] = addr.octets();
     matches!(
         (a, b),
-        (10, _) | (172, 16..=31) | (192, 168)
+        (10, _)
+            | (172, 16..=31)
+            | (192, 168)
+            | (169, 254)
+            | (100, 64..=127)
+            | (198, 18..=19)
+    )
+}
+
+fn is_blocked_ipv6(addr: Ipv6Addr) -> bool {
+    if addr.is_loopback() || addr.is_unspecified() {
+        return true;
+    }
+
+    let [a, b, ..] = addr.octets();
+    matches!(
+        (a, b),
+        (0xfc..=0xfd, _) | (0xfe, 0x80..=0xbf) | (0xff, _)
     )
 }
 
@@ -194,7 +224,7 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{fetch_url_with_client, FetchUrlTool, MAX_RESPONSE_BYTES};
+    use super::{build_fetch_client, fetch_url_with_client, FetchUrlTool, MAX_RESPONSE_BYTES};
     use crate::tools::ToolImpl;
 
     #[tokio::test]
@@ -248,11 +278,21 @@ mod tests {
             "http://10.1.2.3/secret",
             "http://172.16.1.2/data",
             "http://192.168.0.5/internal",
+            "http://169.254.169.254/latest/meta-data",
+            "http://100.64.10.20/internal",
+            "http://198.18.0.1/bench",
+            "http://[fc00::1]/",
+            "http://[fe80::1]/",
+            "http://[ff02::1]/",
         ];
 
         for url in blocked_urls {
             let result = tool.execute(json!({ "url": url })).await;
-            assert!(result.is_err(), "expected blocked host for url: {url}");
+            let err = result.expect_err("expected blocked host error");
+            assert!(
+                err.contains("url host is not allowed"),
+                "expected SSRF block error for {url}, got: {err}"
+            );
         }
     }
 
@@ -268,6 +308,26 @@ mod tests {
         let client = reqwest::Client::new();
         let result = fetch_url_with_client(&format!("{}/missing", server.uri()), &client, true).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_url_redirect_response_is_not_followed_and_returns_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(ResponseTemplate::new(302).append_header("location", "/final"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/final"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("redirect target content"))
+            .mount(&server)
+            .await;
+
+        let client = build_fetch_client().expect("client must build");
+        let result = fetch_url_with_client(&format!("{}/start", server.uri()), &client, true).await;
+        let err = result.expect_err("redirect should return 3xx status error");
+        assert!(err.contains("302"), "expected 302 error, got: {err}");
     }
 
     #[tokio::test]
