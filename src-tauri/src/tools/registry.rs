@@ -14,17 +14,27 @@ impl ToolRegistry {
         Self::default()
     }
 
-    pub fn register<T>(&mut self, tool: T)
+    pub fn register<T>(&mut self, tool: T) -> Result<(), String>
     where
         T: ToolImpl + 'static,
     {
         let name = tool.definition().name;
+        if self.tools.contains_key(&name) {
+            return Err(format!(
+                "tool already registered: {name}. Existing tool remains unchanged"
+            ));
+        }
+
         self.tools.insert(name, Box::new(tool));
+        Ok(())
     }
 
     pub fn get_tools_for_llm(&self) -> Vec<Value> {
-        self.tools
-            .values()
+        let mut tools: Vec<_> = self.tools.values().collect();
+        tools.sort_by_key(|tool| tool.definition().name);
+
+        tools
+            .into_iter()
             .map(|tool| {
                 let def = tool.definition();
                 json!({
@@ -58,6 +68,8 @@ mod tests {
     use crate::tools::types::{ToolDef, ToolImpl};
 
     struct StubTool;
+    struct AlphaTool;
+    struct ZetaTool;
 
     impl ToolImpl for StubTool {
         fn definition(&self) -> ToolDef {
@@ -80,10 +92,48 @@ mod tests {
         }
     }
 
+    impl ToolImpl for AlphaTool {
+        fn definition(&self) -> ToolDef {
+            ToolDef {
+                id: "alpha-tool-id".to_string(),
+                name: "alpha_tool".to_string(),
+                description: "Alpha tool for ordering tests".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            }
+        }
+
+        fn execute(&self, _args: Value) -> BoxFuture<'_, Result<String, String>> {
+            Box::pin(async { Ok("alpha".to_string()) })
+        }
+    }
+
+    impl ToolImpl for ZetaTool {
+        fn definition(&self) -> ToolDef {
+            ToolDef {
+                id: "zeta-tool-id".to_string(),
+                name: "zeta_tool".to_string(),
+                description: "Zeta tool for ordering tests".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            }
+        }
+
+        fn execute(&self, _args: Value) -> BoxFuture<'_, Result<String, String>> {
+            Box::pin(async { Ok("zeta".to_string()) })
+        }
+    }
+
     #[test]
     fn registry_has_tool_after_register() {
         let mut registry = ToolRegistry::new();
-        registry.register(StubTool);
+        registry.register(StubTool).expect("register should succeed");
 
         let tools = registry.get_tools_for_llm();
         assert!(!tools.is_empty());
@@ -93,10 +143,39 @@ mod tests {
     #[test]
     fn execute_stub_tool_returns_ok() {
         let mut registry = ToolRegistry::new();
-        registry.register(StubTool);
+        registry.register(StubTool).expect("register should succeed");
 
         let result = block_on(registry.execute("stub_tool", json!({ "x": "y" })));
         assert_eq!(result, Ok("ok".to_string()));
+    }
+
+    #[test]
+    fn register_rejects_duplicate_tool_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register(StubTool).expect("first register should succeed");
+
+        let result = registry.register(StubTool);
+        assert!(result.is_err());
+        assert_eq!(
+            result,
+            Err("tool already registered: stub_tool. Existing tool remains unchanged".to_string())
+        );
+
+        let tools = registry.get_tools_for_llm();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["name"], "stub_tool");
+    }
+
+    #[test]
+    fn get_tools_for_llm_returns_sorted_by_name() {
+        let mut registry = ToolRegistry::new();
+        registry.register(ZetaTool).expect("register should succeed");
+        registry.register(AlphaTool).expect("register should succeed");
+
+        let tools = registry.get_tools_for_llm();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["function"]["name"], "alpha_tool");
+        assert_eq!(tools[1]["function"]["name"], "zeta_tool");
     }
 
     #[test]
