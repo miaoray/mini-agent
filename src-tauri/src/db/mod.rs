@@ -6,6 +6,9 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
+pub mod conversation;
+pub mod provider;
+
 const DB_FILENAME: &str = "mini-agent.db";
 
 #[allow(dead_code)]
@@ -29,6 +32,7 @@ pub fn init_db(app: &AppHandle) -> Result<DbState, Box<dyn Error>> {
     let db_path = app_data_dir.join(DB_FILENAME);
     let connection = Connection::open(db_path)?;
     connection.execute_batch(include_str!("schema.sql"))?;
+    provider::insert_default_provider(&connection)?;
 
     Ok(DbState {
         connection: Mutex::new(connection),
