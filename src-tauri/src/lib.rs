@@ -1,4 +1,5 @@
 mod db;
+pub mod llm;
 
 use rusqlite::Connection;
 use tauri::Manager;
