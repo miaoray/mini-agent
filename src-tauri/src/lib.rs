@@ -34,6 +34,8 @@ pub struct ToolRegistryState {
 
 const MAX_TOOL_LOOP_STEPS: usize = 6;
 const CHAT_DELTA_MAX_CHARS: usize = 24;
+const DEFAULT_OPENAI_STYLE_MINIMAX_MODEL: &str = "abab6.5";
+const DEFAULT_ANTHROPIC_RUNTIME_MODEL: &str = "MiniMax-M2.5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolBranch {
@@ -509,7 +511,34 @@ fn load_provider_runtime_for_conversation(
     )
     .optional()
     .map_err(|e| e.to_string())?
+    .map(|mut runtime| {
+        runtime.model_id = resolve_runtime_model_id(&runtime.base_url, &runtime.model_id);
+        runtime
+    })
     .ok_or_else(|| format!("conversation not found or provider missing: {conversation_id}"))
+}
+
+fn resolve_runtime_model_id(base_url: &str, stored_model_id: &str) -> String {
+    if is_anthropic_like_base_url(base_url) && is_openai_style_default_model(stored_model_id) {
+        if let Ok(env_model_id) = env::var("MINIMAX_MODEL_ID") {
+            let trimmed = env_model_id.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        return DEFAULT_ANTHROPIC_RUNTIME_MODEL.to_string();
+    }
+
+    stored_model_id.to_string()
+}
+
+fn is_anthropic_like_base_url(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("/anthropic")
+}
+
+fn is_openai_style_default_model(model_id: &str) -> bool {
+    let normalized = model_id.trim().to_ascii_lowercase();
+    normalized == DEFAULT_OPENAI_STYLE_MINIMAX_MODEL || normalized.starts_with("abab")
 }
 
 fn now_unix_ts() -> i64 {
@@ -558,7 +587,14 @@ fn spawn_resumed_agent_turn(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use rusqlite::Connection;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn select_provider_id_prefers_minimax_when_present() {
@@ -633,6 +669,29 @@ mod tests {
         assert!(!chunks.is_empty(), "expected at least one chunk");
         assert!(chunks.iter().all(|c| !c.is_empty()));
         assert_eq!(chunks.join(""), content);
+    }
+
+    #[test]
+    fn resolve_runtime_model_id_uses_anthropic_fallback_for_openai_style_default() {
+        let _guard = env_lock().lock().expect("env lock should acquire");
+        let _ = std::env::remove_var("MINIMAX_MODEL_ID");
+        let resolved = super::resolve_runtime_model_id("https://api.minimaxi.com/anthropic", "abab6.5");
+        assert_eq!(resolved, "MiniMax-M2.5");
+    }
+
+    #[test]
+    fn resolve_runtime_model_id_prefers_env_override_in_anthropic_mode() {
+        let _guard = env_lock().lock().expect("env lock should acquire");
+        std::env::set_var("MINIMAX_MODEL_ID", "MiniMax-M2.5-Pro");
+        let resolved = super::resolve_runtime_model_id("https://api.minimaxi.com/anthropic", "abab6.5");
+        assert_eq!(resolved, "MiniMax-M2.5-Pro");
+        let _ = std::env::remove_var("MINIMAX_MODEL_ID");
+    }
+
+    #[test]
+    fn resolve_runtime_model_id_keeps_existing_model_for_openai_mode() {
+        let resolved = super::resolve_runtime_model_id("https://api.minimax.chat/v1", "abab6.5");
+        assert_eq!(resolved, "abab6.5");
     }
 }
 

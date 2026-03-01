@@ -9,6 +9,7 @@ const DEFAULT_PROVIDER_NAME: &str = "MiniMax M2.5";
 const DEFAULT_PROVIDER_TYPE: &str = "openai";
 const DEFAULT_BASE_URL: &str = "https://api.minimax.chat/v1";
 const DEFAULT_MODEL_ID: &str = "abab6.5";
+const DEFAULT_ANTHROPIC_MODEL_ID: &str = "MiniMax-M2.5";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provider {
@@ -27,7 +28,7 @@ pub fn insert_default_provider(conn: &Connection) -> Result<()> {
     }
 
     let base_url = env::var("MINIMAX_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-    let model_id = env::var("MINIMAX_MODEL_ID").unwrap_or_else(|_| DEFAULT_MODEL_ID.to_string());
+    let model_id = resolve_default_model_id_for_base_url(&base_url);
     let now = now_unix_ts();
 
     conn.execute(
@@ -89,9 +90,34 @@ fn now_unix_ts() -> i64 {
         .unwrap_or(0)
 }
 
+fn resolve_default_model_id_for_base_url(base_url: &str) -> String {
+    if let Ok(model_id) = env::var("MINIMAX_MODEL_ID") {
+        if !model_id.trim().is_empty() {
+            return model_id;
+        }
+    }
+
+    if is_anthropic_like_base_url(base_url) {
+        DEFAULT_ANTHROPIC_MODEL_ID.to_string()
+    } else {
+        DEFAULT_MODEL_ID.to_string()
+    }
+}
+
+fn is_anthropic_like_base_url(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("/anthropic")
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use rusqlite::Connection;
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn insert_default_provider_is_idempotent() {
@@ -114,5 +140,23 @@ mod tests {
 
         let providers = super::list_providers(&conn).expect("list providers should succeed");
         assert_eq!(providers.len(), 1);
+    }
+
+    #[test]
+    fn defaults_model_to_m2_5_when_anthropic_base_url_and_model_env_missing() {
+        let _guard = env_lock().lock().expect("env lock should acquire");
+        std::env::set_var("MINIMAX_BASE_URL", "https://api.minimaxi.com/anthropic");
+        let _ = std::env::remove_var("MINIMAX_MODEL_ID");
+
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        conn.execute_batch(include_str!("schema.sql"))
+            .expect("schema should execute successfully");
+        super::insert_default_provider(&conn).expect("default provider insert should succeed");
+        let provider = super::get_provider_by_id(&conn, super::DEFAULT_PROVIDER_ID)
+            .expect("provider query should succeed")
+            .expect("default provider should exist");
+        assert_eq!(provider.model_id, "MiniMax-M2.5");
+
+        let _ = std::env::remove_var("MINIMAX_BASE_URL");
     }
 }

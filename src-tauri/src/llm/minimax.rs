@@ -6,7 +6,10 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-const CHAT_COMPLETIONS_PATH: &str = "chat/completions";
+const OPENAI_CHAT_COMPLETIONS_PATH: &str = "chat/completions";
+const ANTHROPIC_MESSAGES_PATH: &str = "v1/messages";
+const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
+const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 4096;
 const DEFAULT_HTTP_TIMEOUT_SECONDS: u64 = 60;
 
 #[derive(Debug)]
@@ -86,6 +89,12 @@ pub struct MiniMaxClient {
     base_url: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderMode {
+    OpenAiCompatible,
+    AnthropicCompatible,
+}
+
 impl MiniMaxClient {
     pub fn from_env() -> Result<Self, MiniMaxError> {
         let api_key = env::var("MINIMAX_API_KEY").map_err(|_| MiniMaxError::MissingEnvVar("MINIMAX_API_KEY"))?;
@@ -110,9 +119,17 @@ impl MiniMaxClient {
         model: &str,
         messages: &[ChatMessage],
     ) -> Result<String, MiniMaxError> {
+        let mode = detect_provider_mode(&self.base_url);
         let response = self.send_chat_completion_request(model, messages, false).await?;
-        let payload: OpenAiChatResponse = response.json().await?;
+        if mode == ProviderMode::AnthropicCompatible {
+            let payload: AnthropicMessagesResponse = response.json().await?;
+            return match parse_anthropic_output(payload)? {
+                ChatCompletionOutput::Content(content) => Ok(content),
+                ChatCompletionOutput::ToolCalls(_) => Err(MiniMaxError::MissingResponseContent),
+            };
+        }
 
+        let payload: OpenAiChatResponse = response.json().await?;
         payload
             .choices
             .into_iter()
@@ -129,9 +146,15 @@ impl MiniMaxClient {
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
     ) -> Result<ChatCompletionOutput, MiniMaxError> {
+        let mode = detect_provider_mode(&self.base_url);
         let response = self
             .send_chat_completion_request_with_tools(model, messages, tools, false)
             .await?;
+        if mode == ProviderMode::AnthropicCompatible {
+            let payload: AnthropicMessagesResponse = response.json().await?;
+            return parse_anthropic_output(payload);
+        }
+
         let payload: OpenAiChatResponse = response.json().await?;
         let message = payload
             .choices
@@ -177,6 +200,19 @@ impl MiniMaxClient {
         model: &str,
         messages: &[ChatMessage],
     ) -> Result<StreamedResponse, MiniMaxError> {
+        if detect_provider_mode(&self.base_url) == ProviderMode::AnthropicCompatible {
+            let collected_text = self.chat_completion(model, messages).await?;
+            let deltas = if collected_text.is_empty() {
+                Vec::new()
+            } else {
+                vec![collected_text.clone()]
+            };
+            return Ok(StreamedResponse {
+                collected_text,
+                deltas,
+            });
+        }
+
         let response = self.send_chat_completion_request(model, messages, true).await?;
         self.collect_stream_with_callback(response, |_delta| Ok(())).await
     }
@@ -190,6 +226,14 @@ impl MiniMaxClient {
     where
         F: FnMut(&str) -> Result<(), String>,
     {
+        if detect_provider_mode(&self.base_url) == ProviderMode::AnthropicCompatible {
+            let content = self.chat_completion(model, messages).await?;
+            if !content.is_empty() {
+                on_delta(&content).map_err(MiniMaxError::Callback)?;
+            }
+            return Ok(content);
+        }
+
         let response = self.send_chat_completion_request(model, messages, true).await?;
         let streamed = self
             .collect_stream_with_callback(response, |delta| {
@@ -239,20 +283,36 @@ impl MiniMaxClient {
         messages: &[ChatMessage],
         stream: bool,
     ) -> Result<reqwest::Response, MiniMaxError> {
-        let endpoint = build_chat_completion_endpoint(&self.base_url);
-        let body = OpenAiChatRequest {
-            model,
-            messages,
-            stream,
-        };
-
-        let response = self
+        let mode = detect_provider_mode(&self.base_url);
+        let endpoint = build_chat_completion_endpoint(&self.base_url, mode);
+        let request = self
             .http_client
             .post(endpoint)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
+            .bearer_auth(&self.api_key);
+        let response = match mode {
+            ProviderMode::OpenAiCompatible => {
+                let body = OpenAiChatRequest {
+                    model,
+                    messages,
+                    stream,
+                };
+                request.json(&body).send().await?
+            }
+            ProviderMode::AnthropicCompatible => {
+                let body = AnthropicMessagesRequest {
+                    model,
+                    max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+                    messages,
+                    stream: false,
+                    tools: None,
+                };
+                request
+                    .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
+                    .json(&body)
+                    .send()
+                    .await?
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -270,21 +330,37 @@ impl MiniMaxClient {
         tools: &[serde_json::Value],
         stream: bool,
     ) -> Result<reqwest::Response, MiniMaxError> {
-        let endpoint = build_chat_completion_endpoint(&self.base_url);
-        let body = OpenAiChatRequestWithTools {
-            model,
-            messages,
-            stream,
-            tools,
-        };
-
-        let response = self
+        let mode = detect_provider_mode(&self.base_url);
+        let endpoint = build_chat_completion_endpoint(&self.base_url, mode);
+        let request = self
             .http_client
             .post(endpoint)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?;
+            .bearer_auth(&self.api_key);
+        let response = match mode {
+            ProviderMode::OpenAiCompatible => {
+                let body = OpenAiChatRequestWithTools {
+                    model,
+                    messages,
+                    stream,
+                    tools,
+                };
+                request.json(&body).send().await?
+            }
+            ProviderMode::AnthropicCompatible => {
+                let body = AnthropicMessagesRequest {
+                    model,
+                    max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
+                    messages,
+                    stream: false,
+                    tools: if tools.is_empty() { None } else { Some(tools) },
+                };
+                request
+                    .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
+                    .json(&body)
+                    .send()
+                    .await?
+            }
+        };
 
         let status = response.status();
         if !status.is_success() {
@@ -296,8 +372,68 @@ impl MiniMaxClient {
     }
 }
 
-fn build_chat_completion_endpoint(base_url: &str) -> String {
-    format!("{}/{}", base_url.trim_end_matches('/'), CHAT_COMPLETIONS_PATH)
+fn build_chat_completion_endpoint(base_url: &str, mode: ProviderMode) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    match mode {
+        ProviderMode::OpenAiCompatible => format!("{trimmed}/{OPENAI_CHAT_COMPLETIONS_PATH}"),
+        ProviderMode::AnthropicCompatible => format!("{trimmed}/{ANTHROPIC_MESSAGES_PATH}"),
+    }
+}
+
+fn detect_provider_mode(base_url: &str) -> ProviderMode {
+    if is_anthropic_like_base_url(base_url) {
+        ProviderMode::AnthropicCompatible
+    } else {
+        ProviderMode::OpenAiCompatible
+    }
+}
+
+fn is_anthropic_like_base_url(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("/anthropic")
+}
+
+fn parse_anthropic_output(
+    payload: AnthropicMessagesResponse,
+) -> Result<ChatCompletionOutput, MiniMaxError> {
+    let mut text_segments = Vec::new();
+    let mut tool_calls = Vec::new();
+
+    for block in payload.content {
+        match block.block_type.as_str() {
+            "text" => {
+                if let Some(text) = block.text {
+                    if !text.is_empty() {
+                        text_segments.push(text);
+                    }
+                }
+            }
+            "tool_use" => {
+                let function_name = block.name.ok_or(MiniMaxError::MissingToolCallName)?;
+                let function_arguments = serde_json::to_string(
+                    &block
+                        .input
+                        .ok_or(MiniMaxError::MissingToolCallArguments)?,
+                )?;
+                tool_calls.push(ToolCall {
+                    id: block.id.unwrap_or_default(),
+                    function_name,
+                    function_arguments,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    if !tool_calls.is_empty() {
+        return Ok(ChatCompletionOutput::ToolCalls(tool_calls));
+    }
+
+    let text = text_segments.join("");
+    if text.is_empty() {
+        return Err(MiniMaxError::MissingResponseContent);
+    }
+
+    Ok(ChatCompletionOutput::Content(text))
 }
 
 pub fn parse_sse_delta_line(line: &str) -> Result<Option<String>, MiniMaxError> {
@@ -451,6 +587,16 @@ struct OpenAiChatRequestWithTools<'a> {
     tools: &'a [serde_json::Value],
 }
 
+#[derive(Debug, Serialize)]
+struct AnthropicMessagesRequest<'a> {
+    model: &'a str,
+    max_tokens: u32,
+    messages: &'a [ChatMessage],
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [serde_json::Value]>,
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAiChatResponse {
     choices: Vec<OpenAiChoice>,
@@ -494,13 +640,30 @@ struct OpenAiDelta {
     content: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AnthropicMessagesResponse {
+    content: Vec<AnthropicContentBlock>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicContentBlock {
+    #[serde(rename = "type")]
+    block_type: String,
+    text: Option<String>,
+    id: Option<String>,
+    name: Option<String>,
+    input: Option<serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use super::{collect_streamed_response_from_chunks, ChatMessage, MiniMaxClient};
+    use super::{
+        collect_streamed_response_from_chunks, ChatCompletionOutput, ChatMessage, MiniMaxClient,
+    };
 
     #[tokio::test]
     async fn parses_openai_compatible_response() {
@@ -604,5 +767,98 @@ mod tests {
 
         assert_eq!(streamed.deltas, vec!["你".to_string(), "好".to_string()]);
         assert_eq!(streamed.collected_text, "你好");
+    }
+
+    #[tokio::test]
+    async fn parses_anthropic_compatible_text_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/anthropic/v1/messages"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        { "type": "text", "text": "hi from anthropic mode" }
+                    ]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = MiniMaxClient::new("test-key", format!("{}/anthropic", server.uri()));
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "hello".to_string(),
+        }];
+
+        let response = client
+            .chat_completion("MiniMax-M2.5", &messages)
+            .await
+            .expect("anthropic-compatible response should parse");
+        assert_eq!(response, "hi from anthropic mode");
+    }
+
+    #[tokio::test]
+    async fn parses_anthropic_compatible_tool_use_response() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/anthropic/v1/messages"))
+            .and(header("authorization", "Bearer test-key"))
+            .and(header("anthropic-version", "2023-06-01"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "msg_2",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_123",
+                            "name": "web_search",
+                            "input": { "query": "mini agent" }
+                        }
+                    ]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = MiniMaxClient::new("test-key", format!("{}/anthropic", server.uri()));
+        let messages = vec![ChatMessage {
+            role: "user".to_string(),
+            content: "search it".to_string(),
+        }];
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    },
+                    "required": ["query"]
+                }
+            }
+        })];
+
+        let response = client
+            .chat_completion_with_tools("MiniMax-M2.5", &messages, &tools)
+            .await
+            .expect("anthropic-compatible tool_use response should parse");
+
+        assert_eq!(
+            response,
+            ChatCompletionOutput::ToolCalls(vec![super::ToolCall {
+                id: "toolu_123".to_string(),
+                function_name: "web_search".to_string(),
+                function_arguments: "{\"query\":\"mini agent\"}".to_string(),
+            }])
+        );
     }
 }
