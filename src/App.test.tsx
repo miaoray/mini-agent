@@ -189,6 +189,48 @@ test("handles chat-error by stopping stream and showing message", async () => {
   });
 });
 
+test("disables submit and blocks send while streaming", async () => {
+  invokeMock.mockImplementation(async (command: string) => {
+    if (command === "list_conversations") {
+      return [
+        {
+          id: "conv-stream",
+          title: "Chat Stream",
+          provider_id: "minimax",
+          user_id: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ];
+    }
+    if (command === "send_message") {
+      return "assistant-stream";
+    }
+    return "";
+  });
+
+  useConversationStore.setState({
+    currentConversationId: "conv-stream",
+    activeConversationId: "conv-stream",
+    activeMessageId: "assistant-stream",
+    isStreaming: true,
+  });
+
+  render(<App />);
+  const sendButton = screen.getByRole("button", { name: "Send" });
+  expect(sendButton).toBeDisabled();
+
+  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+    target: { value: "should not send" },
+  });
+  fireEvent.submit(sendButton.closest("form") as HTMLFormElement);
+
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("list_conversations");
+  });
+  expect(invokeMock).not.toHaveBeenCalledWith("send_message", expect.anything());
+});
+
 test("renders pending approval card and calls approve command", async () => {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "list_conversations") {

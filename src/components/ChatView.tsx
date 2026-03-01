@@ -213,6 +213,9 @@ export default function ChatView() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isStreaming) {
+      return;
+    }
     const content = input.trim();
     if (!content) {
       return;
@@ -306,7 +309,9 @@ export default function ChatView() {
           onChange={(event) => setInput(event.currentTarget.value)}
           placeholder="Type a message..."
         />
-        <button type="submit">Send</button>
+        <button type="submit" disabled={isStreaming}>
+          Send
+        </button>
       </form>
     </section>
   );
