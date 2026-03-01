@@ -52,7 +52,6 @@ A lightweight desktop Agent app: chat with LLMs, web search, fetch content, and 
 
 ## Project structure (reference)
 
-- `docs/plans/`: Design docs and implementation plan (including execution log)
 - `src/`: React frontend
 - `src-tauri/`: Tauri 2 + Rust backend (LLM, tools, SQLite)
 - `.env.example`: Environment variable template (do not commit `.env`)
