@@ -47,6 +47,7 @@ function payloadActionType(payload: PendingApprovalPayload | null | undefined) {
 
 export default function ChatView() {
   const [input, setInput] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const {
     currentConversationId,
     messagesByConversation,
@@ -213,7 +214,7 @@ export default function ChatView() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isStreaming) {
+    if (isStreaming || isSubmitting) {
       return;
     }
     const content = input.trim();
@@ -236,10 +237,16 @@ export default function ChatView() {
       content,
     });
 
-    const assistantMessageId = await invoke<string>("send_message", {
-      conversation_id: conversationId,
-      content,
-    });
+    let assistantMessageId = "";
+    setIsSubmitting(true);
+    try {
+      assistantMessageId = await invoke<string>("send_message", {
+        conversation_id: conversationId,
+        content,
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
     upsertMessage({
       id: assistantMessageId,
       conversationId,
@@ -309,7 +316,7 @@ export default function ChatView() {
           onChange={(event) => setInput(event.currentTarget.value)}
           placeholder="Type a message..."
         />
-        <button type="submit" disabled={isStreaming}>
+        <button type="submit" disabled={isStreaming || isSubmitting}>
           Send
         </button>
       </form>

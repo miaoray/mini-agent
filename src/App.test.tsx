@@ -308,6 +308,55 @@ test("disables submit and blocks send while streaming", async () => {
   expect(invokeMock).not.toHaveBeenCalledWith("send_message", expect.anything());
 });
 
+test("blocks rapid second submit while send_message is pending", async () => {
+  let resolveSendMessage: ((value: string) => void) | null = null;
+  invokeMock.mockImplementation((command: string) => {
+    if (command === "list_conversations") {
+      return Promise.resolve([
+        {
+          id: "conv-pending",
+          title: "Chat Pending",
+          provider_id: "minimax",
+          user_id: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ]);
+    }
+    if (command === "list_messages") {
+      return Promise.resolve([]);
+    }
+    if (command === "send_message") {
+      return new Promise<string>((resolve) => {
+        resolveSendMessage = resolve;
+      });
+    }
+    return Promise.resolve("");
+  });
+
+  render(<App />);
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("list_conversations");
+  });
+
+  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+    target: { value: "hello pending" },
+  });
+
+  const form = screen.getByRole("button", { name: "Send" }).closest("form");
+  expect(form).not.toBeNull();
+  fireEvent.submit(form as HTMLFormElement);
+  fireEvent.submit(form as HTMLFormElement);
+
+  await waitFor(() => {
+    const sendCalls = invokeMock.mock.calls.filter(([command]) => command === "send_message");
+    expect(sendCalls).toHaveLength(1);
+  });
+
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  resolveSendMessage?.("assistant-pending");
+});
+
 test("renders pending approval card and calls approve command", async () => {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "list_conversations") {
