@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import "@testing-library/jest-dom/vitest";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import App from "./App";
+import { useConversationStore } from "./stores/conversationStore";
 
 const { invokeMock, listeners } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -22,6 +23,17 @@ vi.mock("@tauri-apps/api/event", () => ({
 beforeEach(() => {
   invokeMock.mockReset();
   listeners.clear();
+  useConversationStore.setState({
+    currentConversationId: null,
+    conversations: [],
+    messagesByConversation: {},
+    pendingApprovals: [],
+    approvalBusy: {},
+    activeConversationId: null,
+    activeMessageId: null,
+    isStreaming: false,
+    error: null,
+  });
 });
 
 afterEach(() => {
@@ -35,20 +47,37 @@ function emit(eventName: string, payload: unknown) {
   }
 }
 
-test("renders app heading", () => {
-  invokeMock.mockResolvedValue("unused");
+test("renders sidebar and chat view", async () => {
+  invokeMock.mockImplementation(async (command: string) => {
+    if (command === "list_conversations") {
+      return [];
+    }
+    return "";
+  });
   render(<App />);
   expect(screen.getByRole("main")).toBeInTheDocument();
-  expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "New Chat" })).toBeInTheDocument();
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("list_conversations");
+  });
 });
 
-test("filters stream events by active turn ids", async () => {
+test("sends a message and streams assistant response", async () => {
   invokeMock.mockImplementation(async (command: string) => {
-    if (command === "create_conversation") {
-      return "conv-1";
+    if (command === "list_conversations") {
+      return [
+        {
+          id: "conv-1",
+          title: "Chat 1",
+          provider_id: "minimax",
+          user_id: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ];
     }
     if (command === "send_message") {
-      return "msg-1";
+      return "assistant-1";
     }
     return "";
   });
@@ -61,10 +90,10 @@ test("filters stream events by active turn ids", async () => {
     expect(listeners.has("approval-resolved")).toBe(true);
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Enter a name..."), {
+  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
     target: { value: "hello" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Greet" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("send_message", {
@@ -78,21 +107,21 @@ test("filters stream events by active turn ids", async () => {
     message_id: "other-message",
     delta: "ignored",
   });
-  expect(screen.getByTestId("streamed-text")).toHaveTextContent("");
+  expect(screen.queryByText("ignored")).not.toBeInTheDocument();
 
   emit("chat-delta", {
     conversation_id: "conv-1",
-    message_id: "msg-1",
+    message_id: "assistant-1",
     delta: "accepted",
   });
   await waitFor(() => {
-    expect(screen.getByTestId("streamed-text")).toHaveTextContent("accepted");
+    expect(screen.getByText("accepted")).toBeInTheDocument();
     expect(screen.getByText("Streaming...")).toBeInTheDocument();
   });
 
   emit("chat-done", {
     conversation_id: "conv-1",
-    message_id: "msg-1",
+    message_id: "assistant-1",
   });
   await waitFor(() => {
     expect(screen.queryByText("Streaming...")).not.toBeInTheDocument();
@@ -101,11 +130,20 @@ test("filters stream events by active turn ids", async () => {
 
 test("handles chat-error by stopping stream and showing message", async () => {
   invokeMock.mockImplementation(async (command: string) => {
-    if (command === "create_conversation") {
-      return "conv-2";
+    if (command === "list_conversations") {
+      return [
+        {
+          id: "conv-2",
+          title: "Chat 2",
+          provider_id: "minimax",
+          user_id: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ];
     }
     if (command === "send_message") {
-      return "msg-2";
+      return "assistant-2";
     }
     return "";
   });
@@ -118,10 +156,10 @@ test("handles chat-error by stopping stream and showing message", async () => {
     expect(listeners.has("approval-resolved")).toBe(true);
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Enter a name..."), {
+  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
     target: { value: "hello" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Greet" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("send_message", {
@@ -132,7 +170,7 @@ test("handles chat-error by stopping stream and showing message", async () => {
 
   emit("chat-delta", {
     conversation_id: "conv-2",
-    message_id: "msg-2",
+    message_id: "assistant-2",
     delta: "partial",
   });
   await waitFor(() => {
@@ -141,23 +179,32 @@ test("handles chat-error by stopping stream and showing message", async () => {
 
   emit("chat-error", {
     conversation_id: "conv-2",
-    message_id: "msg-2",
+    message_id: "assistant-2",
     message: "model failed",
   });
 
   await waitFor(() => {
     expect(screen.queryByText("Streaming...")).not.toBeInTheDocument();
-    expect(screen.getByTestId("streamed-text")).toHaveTextContent("Error: model failed");
+    expect(screen.getByRole("alert")).toHaveTextContent("Error: model failed");
   });
 });
 
 test("renders pending approval card and calls approve command", async () => {
   invokeMock.mockImplementation(async (command: string) => {
-    if (command === "create_conversation") {
-      return "conv-3";
+    if (command === "list_conversations") {
+      return [
+        {
+          id: "conv-3",
+          title: "Chat 3",
+          provider_id: "minimax",
+          user_id: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ];
     }
     if (command === "send_message") {
-      return "msg-3";
+      return "assistant-3";
     }
     if (command === "approve_action") {
       return null;
@@ -170,10 +217,10 @@ test("renders pending approval card and calls approve command", async () => {
     expect(listeners.has("approval-resolved")).toBe(true);
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Enter a name..."), {
+  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
     target: { value: "make files" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Greet" }));
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("send_message", {
@@ -184,7 +231,7 @@ test("renders pending approval card and calls approve command", async () => {
 
   emit("pending-approval", {
     conversation_id: "conv-3",
-    message_id: "msg-3",
+    message_id: "assistant-3",
     approval_id: "approval-1",
     action_type: "write_file",
     payload: {
@@ -209,7 +256,7 @@ test("renders pending approval card and calls approve command", async () => {
 
   emit("approval-resolved", {
     conversation_id: "conv-3",
-    message_id: "msg-3",
+    message_id: "assistant-3",
     approval_id: "approval-1",
     status: "approved",
   });
