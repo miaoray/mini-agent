@@ -30,7 +30,7 @@ function App() {
     setConversations,
     setMessagesForConversation,
   } = useConversationStore((state) => state);
-  const [hasApiKey, setHasApiKey] = useState(true);
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
 
   useEffect(() => {
     void refreshConversations();
@@ -71,9 +71,9 @@ function App() {
   async function loadConfigState() {
     try {
       const result = await invoke<ConfigCheckResponse>("check_config");
-      setHasApiKey(result.hasApiKey !== false);
+      setHasApiKey(result.hasApiKey);
     } catch (_error) {
-      setHasApiKey(true);
+      setHasApiKey(false);
     }
   }
 
@@ -85,7 +85,7 @@ function App() {
 
   return (
     <>
-      <ConfigBanner hasApiKey={hasApiKey} />
+      {hasApiKey !== null ? <ConfigBanner hasApiKey={hasApiKey} /> : null}
       <main className="app-layout">
         <Sidebar
           conversations={conversations}

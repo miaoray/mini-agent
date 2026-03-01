@@ -65,6 +65,27 @@ test("renders sidebar and chat view", async () => {
   });
 });
 
+test("shows config banner when check_config invoke fails", async () => {
+  invokeMock.mockImplementation(async (command: string) => {
+    if (command === "list_conversations") {
+      return [];
+    }
+    if (command === "list_messages") {
+      return [];
+    }
+    if (command === "check_config") {
+      throw new Error("check_config failed");
+    }
+    return "";
+  });
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(screen.getByRole("alert")).toHaveTextContent("Missing `MINIMAX_API_KEY`.");
+  });
+});
+
 test("hydrates messages for initial and selected conversation", async () => {
   invokeMock.mockImplementation(async (command: string, args?: { conversation_id?: string }) => {
     if (command === "list_conversations") {
@@ -259,7 +280,7 @@ test("handles chat-error by stopping stream and showing message", async () => {
 
   await waitFor(() => {
     expect(screen.queryByText("Streaming...")).not.toBeInTheDocument();
-    expect(screen.getByRole("alert")).toHaveTextContent("Error: model failed");
+    expect(screen.getByText("Error: model failed", { selector: ".chat-error" })).toBeInTheDocument();
   });
 });
 
