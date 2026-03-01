@@ -347,12 +347,17 @@ impl MiniMaxClient {
                 request.json(&body).send().await?
             }
             ProviderMode::AnthropicCompatible => {
+                let anthropic_tools = map_openai_tools_to_anthropic(tools);
                 let body = AnthropicMessagesRequest {
                     model,
                     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
                     messages,
                     stream: false,
-                    tools: if tools.is_empty() { None } else { Some(tools) },
+                    tools: if anthropic_tools.is_empty() {
+                        None
+                    } else {
+                        Some(anthropic_tools.as_slice())
+                    },
                 };
                 request
                     .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
@@ -390,6 +395,42 @@ fn detect_provider_mode(base_url: &str) -> ProviderMode {
 
 fn is_anthropic_like_base_url(base_url: &str) -> bool {
     base_url.to_ascii_lowercase().contains("/anthropic")
+}
+
+fn map_openai_tools_to_anthropic(tools: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function")?.as_object()?;
+            let name = function.get("name")?.as_str()?;
+            if name.trim().is_empty() {
+                return None;
+            }
+
+            let input_schema = function.get("parameters")?.as_object()?;
+            let description = function
+                .get("description")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty());
+
+            let mut mapped = serde_json::Map::new();
+            mapped.insert(
+                "name".to_string(),
+                serde_json::Value::String(name.to_string()),
+            );
+            if let Some(description) = description {
+                mapped.insert(
+                    "description".to_string(),
+                    serde_json::Value::String(description.to_string()),
+                );
+            }
+            mapped.insert(
+                "input_schema".to_string(),
+                serde_json::Value::Object(input_schema.clone()),
+            );
+            Some(serde_json::Value::Object(mapped))
+        })
+        .collect()
 }
 
 fn parse_anthropic_output(
@@ -658,11 +699,12 @@ struct AnthropicContentBlock {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
-        collect_streamed_response_from_chunks, ChatCompletionOutput, ChatMessage, MiniMaxClient,
+        collect_streamed_response_from_chunks, map_openai_tools_to_anthropic,
+        ChatCompletionOutput, ChatMessage, MiniMaxClient,
     };
 
     #[tokio::test]
@@ -809,6 +851,21 @@ mod tests {
             .and(path("/anthropic/v1/messages"))
             .and(header("authorization", "Bearer test-key"))
             .and(header("anthropic-version", "2023-06-01"))
+            .and(body_partial_json(json!({
+                "tools": [
+                    {
+                        "name": "web_search",
+                        "description": "search",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "query": { "type": "string" }
+                            },
+                            "required": ["query"]
+                        }
+                    }
+                ]
+            })))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(json!({
                     "id": "msg_2",
@@ -859,6 +916,102 @@ mod tests {
                 function_name: "web_search".to_string(),
                 function_arguments: "{\"query\":\"mini agent\"}".to_string(),
             }])
+        );
+    }
+
+    #[test]
+    fn maps_valid_openai_tool_to_anthropic_tool() {
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "search the web",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    },
+                    "required": ["query"]
+                }
+            }
+        })];
+
+        let mapped = map_openai_tools_to_anthropic(&tools);
+        assert_eq!(
+            mapped,
+            vec![json!({
+                "name": "web_search",
+                "description": "search the web",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    },
+                    "required": ["query"]
+                }
+            })]
+        );
+    }
+
+    #[test]
+    fn skips_malformed_openai_tool_entries() {
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "",
+                "description": "invalid because empty name",
+                "parameters": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        })];
+
+        let mapped = map_openai_tools_to_anthropic(&tools);
+        assert!(mapped.is_empty());
+    }
+
+    #[test]
+    fn keeps_only_valid_entries_from_mixed_tool_list() {
+        let tools = vec![
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string" }
+                        }
+                    }
+                }
+            }),
+            json!({
+                "type": "function",
+                "function": {
+                    "name": "broken_missing_parameters"
+                }
+            }),
+            json!({
+                "type": "not_function",
+                "foo": "bar"
+            }),
+        ];
+
+        let mapped = map_openai_tools_to_anthropic(&tools);
+        assert_eq!(
+            mapped,
+            vec![json!({
+                "name": "web_search",
+                "description": "search",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" }
+                    }
+                }
+            })]
         );
     }
 }
