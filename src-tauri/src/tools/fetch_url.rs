@@ -1,5 +1,5 @@
 use futures::future::BoxFuture;
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_TYPE, LOCATION};
 use scraper::{Html, Selector};
 use serde_json::{json, Value};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -10,6 +10,7 @@ use crate::tools::{ToolDef, ToolImpl};
 const MAX_SUMMARY_CHARS: usize = 2000;
 const REQUEST_TIMEOUT_SECONDS: u64 = 10;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_REDIRECTS: usize = 5;
 
 pub struct FetchUrlTool;
 
@@ -72,46 +73,93 @@ async fn fetch_url_with_client(
     client: &reqwest::Client,
     allow_private_hosts: bool,
 ) -> Result<String, String> {
-    let parsed_url = reqwest::Url::parse(raw_url).map_err(|err| format!("invalid url: {err}"))?;
-    let validated_target = validate_url_target(&parsed_url, allow_private_hosts).await?;
+    let mut current_url = reqwest::Url::parse(raw_url).map_err(|err| format!("invalid url: {err}"))?;
+    let mut redirect_count = 0usize;
 
-    let bound_client;
-    let request_client = if allow_private_hosts {
-        client
-    } else if let Some(target) = validated_target.as_ref() {
-        bound_client = build_bound_fetch_client(Some(target))?;
-        &bound_client
-    } else {
-        client
-    };
+    loop {
+        let validated_target = validate_url_target(&current_url, allow_private_hosts).await?;
+        let response = if allow_private_hosts {
+            client
+                .get(current_url.clone())
+                .send()
+                .await
+                .map_err(|err| err.to_string())?
+        } else if let Some(target) = validated_target.as_ref() {
+            send_with_bound_target(&current_url, target).await?
+        } else {
+            client
+                .get(current_url.clone())
+                .send()
+                .await
+                .map_err(|err| err.to_string())?
+        };
 
-    let response = request_client
-        .get(parsed_url)
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "request failed with HTTP status {}",
-            response.status()
-        ));
+        if response.status().is_redirection() {
+            if redirect_count >= MAX_REDIRECTS {
+                return Err(format!("too many redirects (>{MAX_REDIRECTS})"));
+            }
+            let location = response
+                .headers()
+                .get(LOCATION)
+                .ok_or_else(|| "redirect response missing Location header".to_string())?
+                .to_str()
+                .map_err(|_| "redirect Location header is not valid UTF-8".to_string())?;
+            current_url = current_url
+                .join(location)
+                .map_err(|err| format!("invalid redirect location: {err}"))?;
+            redirect_count += 1;
+            continue;
+        }
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "request failed with HTTP status {}",
+                response.status()
+            ));
+        }
+
+        let is_html = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_ascii_lowercase().contains("text/html"))
+            .unwrap_or(false);
+
+        let body = read_response_body_limited(response, MAX_RESPONSE_BYTES).await?;
+        let readable = if is_html {
+            extract_html_text(&body)?
+        } else {
+            sanitize_whitespace(&body)
+        };
+        let summary = truncate_chars(&readable, MAX_SUMMARY_CHARS);
+        return Ok(format!("Fetched URL content summary: {summary}"));
+    }
+}
+
+async fn send_with_bound_target(
+    parsed_url: &reqwest::Url,
+    target: &ValidatedDnsTarget,
+) -> Result<reqwest::Response, String> {
+    let mut errors = Vec::new();
+    for addr in &target.addrs {
+        let single_addr_target = ValidatedDnsTarget {
+            host: target.host.clone(),
+            addrs: vec![*addr],
+        };
+        let client = build_bound_fetch_client(Some(&single_addr_target))?;
+        match client.get(parsed_url.clone()).send().await {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                errors.push(format!("{addr}: {err}"));
+            }
+        }
     }
 
-    let is_html = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_ascii_lowercase().contains("text/html"))
-        .unwrap_or(false);
-
-    let body = read_response_body_limited(response, MAX_RESPONSE_BYTES).await?;
-    let readable = if is_html {
-        extract_html_text(&body)?
-    } else {
-        sanitize_whitespace(&body)
-    };
-    let summary = truncate_chars(&readable, MAX_SUMMARY_CHARS);
-    Ok(format!("Fetched URL content summary: {summary}"))
+    Err(format!(
+        "all resolved addresses failed for host {}: {}",
+        target.host,
+        errors.join(" | ")
+    ))
 }
 
 async fn validate_url_target(
@@ -315,7 +363,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::{
-        build_bound_fetch_client, build_fetch_client, fetch_url_with_client,
+        build_bound_fetch_client, build_fetch_client, fetch_url_with_client, send_with_bound_target,
         validate_url_target_with_resolver, FetchUrlTool, ValidatedDnsTarget, MAX_RESPONSE_BYTES,
     };
     use crate::tools::ToolImpl;
@@ -462,7 +510,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_url_redirect_response_is_not_followed_and_returns_error() {
+    async fn fetch_url_follows_safe_redirect_and_returns_content() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/start"))
@@ -476,9 +524,13 @@ mod tests {
             .await;
 
         let client = build_fetch_client().expect("client must build");
-        let result = fetch_url_with_client(&format!("{}/start", server.uri()), &client, true).await;
-        let err = result.expect_err("redirect should return 3xx status error");
-        assert!(err.contains("302"), "expected 302 error, got: {err}");
+        let result = fetch_url_with_client(&format!("{}/start", server.uri()), &client, true)
+            .await
+            .expect("redirect should be followed manually");
+        assert!(
+            result.contains("redirect target content"),
+            "expected final response body in summary, got: {result}"
+        );
     }
 
     #[tokio::test]
@@ -499,5 +551,31 @@ mod tests {
                 .expect_err("oversized body should fail")
                 .contains("maximum allowed size")
         );
+    }
+
+    #[tokio::test]
+    async fn send_with_bound_target_retries_when_first_address_fails() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/retry"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+
+        let parsed = reqwest::Url::parse("http://retry.test/retry")
+            .expect("retry test URL should parse successfully");
+        let target = ValidatedDnsTarget {
+            host: "retry.test".to_string(),
+            // First address should fail quickly (connection refused), second should succeed.
+            addrs: vec![
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), server.address().port()),
+            ],
+        };
+
+        let response = send_with_bound_target(&parsed, &target)
+            .await
+            .expect("request should succeed with fallback address");
+        assert_eq!(response.status().as_u16(), 200);
     }
 }

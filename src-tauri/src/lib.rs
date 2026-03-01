@@ -197,7 +197,6 @@ async fn send_message(
         .map_err(|e| e.to_string())?;
         load_provider_runtime_for_conversation(&conn, &conversation_id)?
     };
-
     let app_handle = app.clone();
     let background_conversation_id = conversation_id.clone();
     let background_message_id = assistant_message_id.clone();
@@ -211,6 +210,10 @@ async fn send_message(
         )
         .await
         {
+            eprintln!(
+                "[mini-agent][send_message] run_agent_turn error conversation_id={} message_id={} err={}",
+                background_conversation_id, background_message_id, err
+            );
             let _ = app_handle.emit(
                 "chat-error",
                 agent::ChatErrorEvent {
@@ -368,7 +371,7 @@ async fn run_agent_turn(
                                     agent::PendingApprovalEvent {
                                         conversation_id: conversation_id.clone(),
                                         message_id: assistant_message_id.clone(),
-                                        approval_id,
+                                        approval_id: approval_id.clone(),
                                         action_type: tool_call.function_name.clone(),
                                         payload: tool_args.clone(),
                                     },
@@ -467,8 +470,8 @@ async fn run_agent_turn(
         .emit(
             "chat-done",
             agent::ChatDoneEvent {
-                conversation_id,
-                message_id: assistant_message_id,
+                conversation_id: conversation_id.clone(),
+                message_id: assistant_message_id.clone(),
             },
         )
         .map_err(|e| e.to_string())?;

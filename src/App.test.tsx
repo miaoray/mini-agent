@@ -87,7 +87,7 @@ test("shows config banner when check_config invoke fails", async () => {
 });
 
 test("hydrates messages for initial and selected conversation", async () => {
-  invokeMock.mockImplementation(async (command: string, args?: { conversation_id?: string }) => {
+  invokeMock.mockImplementation(async (command: string, args?: { conversationId?: string }) => {
     if (command === "list_conversations") {
       return [
         {
@@ -109,7 +109,7 @@ test("hydrates messages for initial and selected conversation", async () => {
       ];
     }
     if (command === "list_messages") {
-      if (args?.conversation_id === "conv-1") {
+      if (args?.conversationId === "conv-1") {
         return [
           {
             id: "m-1",
@@ -120,7 +120,7 @@ test("hydrates messages for initial and selected conversation", async () => {
           },
         ];
       }
-      if (args?.conversation_id === "conv-2") {
+      if (args?.conversationId === "conv-2") {
         return [
           {
             id: "m-2",
@@ -139,14 +139,14 @@ test("hydrates messages for initial and selected conversation", async () => {
   render(<App />);
 
   await waitFor(() => {
-    expect(invokeMock).toHaveBeenCalledWith("list_messages", { conversation_id: "conv-1" });
+    expect(invokeMock).toHaveBeenCalledWith("list_messages", { conversationId: "conv-1" });
     expect(screen.getByText("Hello from chat 1")).toBeInTheDocument();
   });
 
   fireEvent.click(screen.getByRole("button", { name: "Chat 2" }));
 
   await waitFor(() => {
-    expect(invokeMock).toHaveBeenCalledWith("list_messages", { conversation_id: "conv-2" });
+    expect(invokeMock).toHaveBeenCalledWith("list_messages", { conversationId: "conv-2" });
     expect(screen.getByText("Welcome to chat 2")).toBeInTheDocument();
   });
 });
@@ -189,7 +189,7 @@ test("sends a message and streams assistant response", async () => {
 
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("send_message", {
-      conversation_id: "conv-1",
+      conversationId: "conv-1",
       content: "hello",
     });
   });
@@ -258,7 +258,7 @@ test("handles chat-error by stopping stream and showing message", async () => {
 
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("send_message", {
-      conversation_id: "conv-2",
+      conversationId: "conv-2",
       content: "hello",
     });
   });
@@ -330,7 +330,7 @@ test("disables submit and blocks send while streaming", async () => {
 });
 
 test("blocks rapid second submit while send_message is pending", async () => {
-  let resolveSendMessage: ((value: string) => void) | null = null;
+  let resolveSendMessage!: (value: string) => void;
   invokeMock.mockImplementation((command: string) => {
     if (command === "list_conversations") {
       return Promise.resolve([
@@ -375,11 +375,11 @@ test("blocks rapid second submit while send_message is pending", async () => {
   });
 
   expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-  resolveSendMessage?.("assistant-pending");
+  resolveSendMessage("assistant-pending");
 });
 
 test("blocks rapid second submit while create_conversation is pending in new chat", async () => {
-  let resolveCreateConversation: ((value: string) => void) | null = null;
+  let resolveCreateConversation!: (value: string) => void;
   const createConversationPromise = new Promise<string>((resolve) => {
     resolveCreateConversation = resolve;
   });
@@ -421,7 +421,7 @@ test("blocks rapid second submit while create_conversation is pending in new cha
     expect(createCalls).toHaveLength(1);
   });
 
-  resolveCreateConversation?.("conv-new");
+  resolveCreateConversation("conv-new");
 
   await waitFor(() => {
     const sendCalls = invokeMock.mock.calls.filter(([command]) => command === "send_message");
@@ -467,7 +467,7 @@ test("renders pending approval card and calls approve command", async () => {
 
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("send_message", {
-      conversation_id: "conv-3",
+      conversationId: "conv-3",
       content: "make files",
     });
   });
@@ -493,7 +493,7 @@ test("renders pending approval card and calls approve command", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Accept" }));
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("approve_action", {
-      approval_id: "approval-1",
+      approvalId: "approval-1",
     });
   });
 

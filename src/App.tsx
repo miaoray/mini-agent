@@ -55,7 +55,7 @@ function App() {
 
   async function hydrateConversationMessages(conversationId: string) {
     const dbMessages = await invoke<BackendMessage[]>("list_messages", {
-      conversation_id: conversationId,
+      conversationId,
     });
     setMessagesForConversation(conversationId, dbMessages.map(toChatMessage));
   }

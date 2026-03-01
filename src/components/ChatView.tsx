@@ -240,7 +240,7 @@ export default function ChatView() {
       });
 
       const assistantMessageId = await invoke<string>("send_message", {
-        conversation_id: conversationId,
+        conversationId,
         content,
       });
 
@@ -252,6 +252,9 @@ export default function ChatView() {
       });
       setStreaming(conversationId, assistantMessageId, true);
       setInput("");
+    } catch (caughtError: unknown) {
+      const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
+      setError(`Error: ${message}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -260,7 +263,7 @@ export default function ChatView() {
   async function approvePending(approvalId: string) {
     setApprovalBusy(approvalId, true);
     try {
-      await invoke("approve_action", { approval_id: approvalId });
+      await invoke("approve_action", { approvalId });
     } catch (caughtError: unknown) {
       const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
       setError(`Error: ${message}`);
@@ -271,7 +274,7 @@ export default function ChatView() {
   async function rejectPending(approvalId: string) {
     setApprovalBusy(approvalId, true);
     try {
-      await invoke("reject_action", { approval_id: approvalId });
+      await invoke("reject_action", { approvalId });
     } catch (caughtError: unknown) {
       const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
       setError(`Error: ${message}`);

@@ -11,6 +11,8 @@ const ANTHROPIC_MESSAGES_PATH: &str = "v1/messages";
 const ANTHROPIC_VERSION_HEADER: &str = "2023-06-01";
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 4096;
 const DEFAULT_HTTP_TIMEOUT_SECONDS: u64 = 60;
+const MAX_HTTP_RETRIES: usize = 2;
+const RETRY_BASE_DELAY_MS: u64 = 250;
 
 #[derive(Debug)]
 pub enum MiniMaxError {
@@ -285,10 +287,6 @@ impl MiniMaxClient {
     ) -> Result<reqwest::Response, MiniMaxError> {
         let mode = detect_provider_mode(&self.base_url);
         let endpoint = build_chat_completion_endpoint(&self.base_url, mode);
-        let request = self
-            .http_client
-            .post(endpoint)
-            .bearer_auth(&self.api_key);
         let response = match mode {
             ProviderMode::OpenAiCompatible => {
                 let body = OpenAiChatRequest {
@@ -296,7 +294,13 @@ impl MiniMaxClient {
                     messages,
                     stream,
                 };
-                request.json(&body).send().await?
+                self.send_with_retries(|| {
+                    self.http_client
+                        .post(endpoint.clone())
+                        .bearer_auth(&self.api_key)
+                        .json(&body)
+                })
+                .await?
             }
             ProviderMode::AnthropicCompatible => {
                 let body = AnthropicMessagesRequest {
@@ -306,11 +310,14 @@ impl MiniMaxClient {
                     stream: false,
                     tools: None,
                 };
-                request
-                    .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
-                    .json(&body)
-                    .send()
-                    .await?
+                self.send_with_retries(|| {
+                    self.http_client
+                        .post(endpoint.clone())
+                        .bearer_auth(&self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
+                        .json(&body)
+                })
+                .await?
             }
         };
 
@@ -332,10 +339,6 @@ impl MiniMaxClient {
     ) -> Result<reqwest::Response, MiniMaxError> {
         let mode = detect_provider_mode(&self.base_url);
         let endpoint = build_chat_completion_endpoint(&self.base_url, mode);
-        let request = self
-            .http_client
-            .post(endpoint)
-            .bearer_auth(&self.api_key);
         let response = match mode {
             ProviderMode::OpenAiCompatible => {
                 let body = OpenAiChatRequestWithTools {
@@ -344,7 +347,13 @@ impl MiniMaxClient {
                     stream,
                     tools,
                 };
-                request.json(&body).send().await?
+                self.send_with_retries(|| {
+                    self.http_client
+                        .post(endpoint.clone())
+                        .bearer_auth(&self.api_key)
+                        .json(&body)
+                })
+                .await?
             }
             ProviderMode::AnthropicCompatible => {
                 let anthropic_tools = map_openai_tools_to_anthropic(tools);
@@ -359,11 +368,14 @@ impl MiniMaxClient {
                         Some(anthropic_tools.as_slice())
                     },
                 };
-                request
-                    .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
-                    .json(&body)
-                    .send()
-                    .await?
+                self.send_with_retries(|| {
+                    self.http_client
+                        .post(endpoint.clone())
+                        .bearer_auth(&self.api_key)
+                        .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
+                        .json(&body)
+                })
+                .await?
             }
         };
 
@@ -375,6 +387,49 @@ impl MiniMaxClient {
 
         Ok(response)
     }
+
+    async fn send_with_retries<F>(&self, mut build_request: F) -> Result<reqwest::Response, MiniMaxError>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        let mut last_err: Option<reqwest::Error> = None;
+        for attempt in 0..=MAX_HTTP_RETRIES {
+            match build_request().send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if is_retryable_status(status.as_u16()) && attempt < MAX_HTTP_RETRIES {
+                        tokio::time::sleep(retry_delay_for_attempt(attempt)).await;
+                        continue;
+                    }
+                    return Ok(response);
+                }
+                Err(err) => {
+                    if !is_retryable_http_error(&err) || attempt >= MAX_HTTP_RETRIES {
+                        return Err(MiniMaxError::Http(err));
+                    }
+                    last_err = Some(err);
+                    tokio::time::sleep(retry_delay_for_attempt(attempt)).await;
+                }
+            }
+        }
+
+        Err(MiniMaxError::Http(
+            last_err.expect("retry loop should capture last reqwest error before returning"),
+        ))
+    }
+}
+
+fn is_retryable_http_error(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request()
+}
+
+fn is_retryable_status(status: u16) -> bool {
+    status == 429 || (500..=599).contains(&status)
+}
+
+fn retry_delay_for_attempt(attempt: usize) -> Duration {
+    let multiplier = 1u64 << (attempt as u32);
+    Duration::from_millis(RETRY_BASE_DELAY_MS.saturating_mul(multiplier))
 }
 
 fn build_chat_completion_endpoint(base_url: &str, mode: ProviderMode) -> String {
