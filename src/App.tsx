@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ChatView from "./components/ChatView";
+import ConfigBanner from "./components/ConfigBanner";
 import Sidebar from "./components/Sidebar";
 import {
   useConversationStore,
@@ -17,6 +18,10 @@ type BackendMessage = {
   created_at: number;
 };
 
+type ConfigCheckResponse = {
+  hasApiKey: boolean;
+};
+
 function App() {
   const {
     conversations,
@@ -25,9 +30,11 @@ function App() {
     setConversations,
     setMessagesForConversation,
   } = useConversationStore((state) => state);
+  const [hasApiKey, setHasApiKey] = useState(true);
 
   useEffect(() => {
     void refreshConversations();
+    void loadConfigState();
   }, []);
 
   useEffect(() => {
@@ -61,6 +68,15 @@ function App() {
     }
   }
 
+  async function loadConfigState() {
+    try {
+      const result = await invoke<ConfigCheckResponse>("check_config");
+      setHasApiKey(result.hasApiKey !== false);
+    } catch (_error) {
+      setHasApiKey(true);
+    }
+  }
+
   async function handleNewChat() {
     const conversationId = await invoke<string>("create_conversation");
     await refreshConversations();
@@ -68,17 +84,20 @@ function App() {
   }
 
   return (
-    <main className="app-layout">
-      <Sidebar
-        conversations={conversations}
-        currentConversationId={currentConversationId}
-        onSelectConversation={setCurrentConversation}
-        onNewChat={() => {
-          void handleNewChat();
-        }}
-      />
-      <ChatView />
-    </main>
+    <>
+      <ConfigBanner hasApiKey={hasApiKey} />
+      <main className="app-layout">
+        <Sidebar
+          conversations={conversations}
+          currentConversationId={currentConversationId}
+          onSelectConversation={setCurrentConversation}
+          onNewChat={() => {
+            void handleNewChat();
+          }}
+        />
+        <ChatView />
+      </main>
+    </>
   );
 }
 

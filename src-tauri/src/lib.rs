@@ -1,5 +1,6 @@
 mod agent;
 mod approval;
+mod commands;
 mod db;
 pub mod llm;
 pub mod tools;
@@ -637,6 +638,7 @@ mod tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    dotenvy::dotenv().ok();
     tauri::Builder::default()
         .setup(|app| {
             let db_state = db::init_db(app.handle())?;
@@ -657,7 +659,8 @@ pub fn run() {
             get_conversation,
             send_message,
             approve_action,
-            reject_action
+            reject_action,
+            commands::check_config::check_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
