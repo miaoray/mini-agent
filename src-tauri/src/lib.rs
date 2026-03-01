@@ -5,6 +5,7 @@ pub mod llm;
 pub mod tools;
 
 use std::env;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -194,6 +195,7 @@ async fn send_message(
             background_conversation_id.clone(),
             background_message_id.clone(),
             provider_runtime,
+            true,
         )
         .await
         {
@@ -217,14 +219,23 @@ fn approve_action(
     state: tauri::State<'_, db::DbState>,
     approval_id: String,
 ) -> Result<(), String> {
-    let base_dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let resolved_event = {
+    let base_dir = resolve_approval_base_dir(&app)?;
+    let (resolved_event, provider_runtime) = {
         let conn = state.connection()?;
-        approval::approve_action(&conn, &approval_id, &base_dir)?
+        let resolved_event = approval::approve_action(&conn, &approval_id, &base_dir)?;
+        let provider_runtime =
+            load_provider_runtime_for_conversation(&conn, &resolved_event.conversation_id)?;
+        (resolved_event, provider_runtime)
     };
+    let conversation_id = resolved_event.conversation_id.clone();
+    let message_id = resolved_event.message_id.clone();
 
     app.emit("approval-resolved", resolved_event)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    spawn_resumed_agent_turn(app, conversation_id, message_id, provider_runtime);
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -233,13 +244,22 @@ fn reject_action(
     state: tauri::State<'_, db::DbState>,
     approval_id: String,
 ) -> Result<(), String> {
-    let resolved_event = {
+    let (resolved_event, provider_runtime) = {
         let conn = state.connection()?;
-        approval::reject_action(&conn, &approval_id)?
+        let resolved_event = approval::reject_action(&conn, &approval_id)?;
+        let provider_runtime =
+            load_provider_runtime_for_conversation(&conn, &resolved_event.conversation_id)?;
+        (resolved_event, provider_runtime)
     };
+    let conversation_id = resolved_event.conversation_id.clone();
+    let message_id = resolved_event.message_id.clone();
 
     app.emit("approval-resolved", resolved_event)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    spawn_resumed_agent_turn(app, conversation_id, message_id, provider_runtime);
+
+    Ok(())
 }
 
 async fn run_agent_turn(
@@ -247,13 +267,14 @@ async fn run_agent_turn(
     conversation_id: String,
     assistant_message_id: String,
     provider_runtime: agent::ProviderRuntime,
+    insert_placeholder: bool,
 ) -> Result<(), String> {
     let mut llm_messages = {
         let db_state = app_handle.state::<db::DbState>();
         let conn = db_state.connection()?;
         agent::r#loop::build_messages_for_llm(&conn, &conversation_id).map_err(|e| e.to_string())?
     };
-    {
+    if insert_placeholder {
         let db_state = app_handle.state::<db::DbState>();
         let conn = db_state.connection()?;
         conn.execute(
@@ -486,6 +507,43 @@ fn now_unix_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn resolve_approval_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .home_dir()
+        .or_else(|_| app.path().document_dir())
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| format!("failed to resolve approval base directory: {e}"))
+}
+
+fn spawn_resumed_agent_turn(
+    app: tauri::AppHandle,
+    conversation_id: String,
+    assistant_message_id: String,
+    provider_runtime: agent::ProviderRuntime,
+) {
+    let app_handle = app.clone();
+    tokio::spawn(async move {
+        if let Err(err) = run_agent_turn(
+            &app_handle,
+            conversation_id.clone(),
+            assistant_message_id.clone(),
+            provider_runtime,
+            false,
+        )
+        .await
+        {
+            let _ = app_handle.emit(
+                "chat-error",
+                agent::ChatErrorEvent {
+                    conversation_id,
+                    message_id: assistant_message_id,
+                    message: err,
+                },
+            );
+        }
+    });
 }
 
 #[cfg(test)]

@@ -1,9 +1,11 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::Value;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,7 +20,7 @@ pub struct ApprovalResolvedEvent {
 struct PendingApprovalRow {
     approval_id: String,
     conversation_id: String,
-    message_id: String,
+    turn_id: String,
     action_type: String,
     payload_json: String,
     status: String,
@@ -46,10 +48,11 @@ pub fn approve_action(
         [row.approval_id.as_str()],
     )
     .map_err(|e| e.to_string())?;
+    let message_id = resolve_assistant_message_id_for_turn(conn, &row.turn_id)?;
 
     Ok(ApprovalResolvedEvent {
         conversation_id: row.conversation_id,
-        message_id: row.message_id,
+        message_id,
         approval_id: row.approval_id,
         status: "approved".to_string(),
     })
@@ -69,10 +72,12 @@ pub fn reject_action(conn: &Connection, approval_id: &str) -> Result<ApprovalRes
         [row.approval_id.as_str()],
     )
     .map_err(|e| e.to_string())?;
+    insert_rejection_context_message(conn, &row)?;
+    let message_id = resolve_assistant_message_id_for_turn(conn, &row.turn_id)?;
 
     Ok(ApprovalResolvedEvent {
         conversation_id: row.conversation_id,
-        message_id: row.message_id,
+        message_id,
         approval_id: row.approval_id,
         status: "rejected".to_string(),
     })
@@ -80,16 +85,15 @@ pub fn reject_action(conn: &Connection, approval_id: &str) -> Result<ApprovalRes
 
 fn load_pending_approval(conn: &Connection, approval_id: &str) -> Result<PendingApprovalRow, String> {
     conn.query_row(
-        "SELECT p.id, p.conversation_id, COALESCE(at.message_id, ''), p.action_type, p.payload_json, p.status
+        "SELECT p.id, p.conversation_id, p.turn_id, p.action_type, p.payload_json, p.status
          FROM pending_approval p
-         LEFT JOIN agent_turn at ON at.id = p.turn_id
          WHERE p.id = ?1",
         [approval_id],
         |row| {
             Ok(PendingApprovalRow {
                 approval_id: row.get(0)?,
                 conversation_id: row.get(1)?,
-                message_id: row.get(2)?,
+                turn_id: row.get(2)?,
                 action_type: row.get(3)?,
                 payload_json: row.get(4)?,
                 status: row.get(5)?,
@@ -99,6 +103,53 @@ fn load_pending_approval(conn: &Connection, approval_id: &str) -> Result<Pending
     .optional()
     .map_err(|e| e.to_string())?
     .ok_or_else(|| format!("approval not found: {approval_id}"))
+}
+
+fn resolve_assistant_message_id_for_turn(conn: &Connection, turn_id: &str) -> Result<String, String> {
+    conn.query_row(
+        "SELECT message_id FROM agent_turn WHERE id = ?1",
+        [turn_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("agent turn not found for approval turn_id: {turn_id}"))
+}
+
+fn insert_rejection_context_message(conn: &Connection, row: &PendingApprovalRow) -> Result<(), String> {
+    let path = serde_json::from_str::<Value>(&row.payload_json)
+        .ok()
+        .and_then(|payload| payload.get("path").and_then(Value::as_str).map(ToOwned::to_owned));
+    let rejection_content = match path {
+        Some(path) if !path.trim().is_empty() => {
+            format!(
+                "User rejected pending tool action: {} on path {}.",
+                row.action_type, path
+            )
+        }
+        _ => format!("User rejected pending tool action: {}.", row.action_type),
+    };
+
+    conn.execute(
+        "INSERT INTO message (id, conversation_id, role, content, created_at)
+         VALUES (?1, ?2, 'user', ?3, ?4)",
+        rusqlite::params![
+            Uuid::new_v4().to_string(),
+            row.conversation_id.clone(),
+            rejection_content,
+            now_unix_ts()
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn now_unix_ts() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn execute_approval_action(action_type: &str, payload: &Value, base_dir: &Path) -> Result<(), String> {
@@ -274,5 +325,47 @@ mod tests {
             )
             .expect("status query should succeed");
         assert_eq!(status, "rejected");
+    }
+
+    #[test]
+    fn resolve_assistant_message_id_reads_message_from_turn_id() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        seed_pending_approval(
+            &conn,
+            "approval-turn-resolution",
+            "create_directory",
+            r#"{"path":"sandbox/path"}"#,
+        );
+        let pending = super::load_pending_approval(&conn, "approval-turn-resolution")
+            .expect("pending approval should load");
+
+        let message_id = super::resolve_assistant_message_id_for_turn(&conn, &pending.turn_id)
+            .expect("message id should resolve from turn");
+        assert_eq!(message_id, "msg-1");
+    }
+
+    #[test]
+    fn reject_inserts_rejection_context_message_with_tool_and_path() {
+        let conn = Connection::open_in_memory().expect("in-memory sqlite should open");
+        seed_pending_approval(
+            &conn,
+            "approval-reject-context",
+            "write_file",
+            r#"{"path":"sandbox/note.txt","content":"hello"}"#,
+        );
+
+        super::reject_action(&conn, "approval-reject-context")
+            .expect("reject should insert rejection context");
+
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM message WHERE conversation_id = ?1 AND role = 'user' AND content LIKE 'User rejected pending tool action:%'
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                ["conv-1"],
+                |row| row.get(0),
+            )
+            .expect("rejection context message should be inserted");
+        assert!(content.contains("write_file"));
+        assert!(content.contains("sandbox/note.txt"));
     }
 }
