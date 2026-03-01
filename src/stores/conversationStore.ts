@@ -37,6 +37,7 @@ type ConversationState = {
   error: string | null;
   setCurrentConversation: (conversationId: string | null) => void;
   setConversations: (conversations: Conversation[]) => void;
+  setMessagesForConversation: (conversationId: string, messages: ChatMessage[]) => void;
   upsertMessage: (message: ChatMessage) => void;
   appendDelta: (conversationId: string, messageId: string, delta: string) => void;
   setStreaming: (conversationId: string | null, messageId: string | null, streaming: boolean) => void;
@@ -59,6 +60,13 @@ export const useConversationStore = create<ConversationState>((set) => ({
   error: null,
   setCurrentConversation: (conversationId) => set({ currentConversationId: conversationId }),
   setConversations: (conversations) => set({ conversations }),
+  setMessagesForConversation: (conversationId, messages) =>
+    set((state) => ({
+      messagesByConversation: {
+        ...state.messagesByConversation,
+        [conversationId]: messages,
+      },
+    })),
   upsertMessage: (message) =>
     set((state) => {
       const existing = state.messagesByConversation[message.conversationId] ?? [];

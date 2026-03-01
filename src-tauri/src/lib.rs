@@ -152,6 +152,15 @@ fn list_conversations(state: tauri::State<'_, db::DbState>) -> Result<Vec<db::co
 }
 
 #[tauri::command]
+fn list_messages(
+    state: tauri::State<'_, db::DbState>,
+    conversation_id: String,
+) -> Result<Vec<db::message::Message>, String> {
+    let conn = state.connection()?;
+    db::message::list_messages_by_conversation(&conn, &conversation_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_conversation(
     state: tauri::State<'_, db::DbState>,
     id: String,
@@ -644,6 +653,7 @@ pub fn run() {
             greet,
             create_conversation,
             list_conversations,
+            list_messages,
             get_conversation,
             send_message,
             approve_action,

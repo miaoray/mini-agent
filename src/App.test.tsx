@@ -52,6 +52,9 @@ test("renders sidebar and chat view", async () => {
     if (command === "list_conversations") {
       return [];
     }
+    if (command === "list_messages") {
+      return [];
+    }
     return "";
   });
   render(<App />);
@@ -59,6 +62,71 @@ test("renders sidebar and chat view", async () => {
   expect(screen.getByRole("button", { name: "New Chat" })).toBeInTheDocument();
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("list_conversations");
+  });
+});
+
+test("hydrates messages for initial and selected conversation", async () => {
+  invokeMock.mockImplementation(async (command: string, args?: { conversation_id?: string }) => {
+    if (command === "list_conversations") {
+      return [
+        {
+          id: "conv-1",
+          title: "Chat 1",
+          provider_id: "minimax",
+          user_id: null,
+          created_at: 1,
+          updated_at: 1,
+        },
+        {
+          id: "conv-2",
+          title: "Chat 2",
+          provider_id: "minimax",
+          user_id: null,
+          created_at: 2,
+          updated_at: 2,
+        },
+      ];
+    }
+    if (command === "list_messages") {
+      if (args?.conversation_id === "conv-1") {
+        return [
+          {
+            id: "m-1",
+            conversation_id: "conv-1",
+            role: "assistant",
+            content: "Hello from chat 1",
+            created_at: 1,
+          },
+        ];
+      }
+      if (args?.conversation_id === "conv-2") {
+        return [
+          {
+            id: "m-2",
+            conversation_id: "conv-2",
+            role: "assistant",
+            content: "Welcome to chat 2",
+            created_at: 2,
+          },
+        ];
+      }
+      return [];
+    }
+    return "";
+  });
+
+  render(<App />);
+
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("list_messages", { conversation_id: "conv-1" });
+    expect(screen.getByText("Hello from chat 1")).toBeInTheDocument();
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Chat 2" }));
+
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("list_messages", { conversation_id: "conv-2" });
+    expect(screen.getByText("Welcome to chat 2")).toBeInTheDocument();
   });
 });
 
@@ -75,6 +143,9 @@ test("sends a message and streams assistant response", async () => {
           updated_at: 1,
         },
       ];
+    }
+    if (command === "list_messages") {
+      return [];
     }
     if (command === "send_message") {
       return "assistant-1";
@@ -142,6 +213,9 @@ test("handles chat-error by stopping stream and showing message", async () => {
         },
       ];
     }
+    if (command === "list_messages") {
+      return [];
+    }
     if (command === "send_message") {
       return "assistant-2";
     }
@@ -203,6 +277,9 @@ test("disables submit and blocks send while streaming", async () => {
         },
       ];
     }
+    if (command === "list_messages") {
+      return [];
+    }
     if (command === "send_message") {
       return "assistant-stream";
     }
@@ -244,6 +321,9 @@ test("renders pending approval card and calls approve command", async () => {
           updated_at: 1,
         },
       ];
+    }
+    if (command === "list_messages") {
+      return [];
     }
     if (command === "send_message") {
       return "assistant-3";
