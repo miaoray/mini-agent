@@ -357,6 +357,57 @@ test("blocks rapid second submit while send_message is pending", async () => {
   resolveSendMessage?.("assistant-pending");
 });
 
+test("blocks rapid second submit while create_conversation is pending in new chat", async () => {
+  let resolveCreateConversation: ((value: string) => void) | null = null;
+  const createConversationPromise = new Promise<string>((resolve) => {
+    resolveCreateConversation = resolve;
+  });
+
+  invokeMock.mockImplementation((command: string) => {
+    if (command === "list_conversations") {
+      return Promise.resolve([]);
+    }
+    if (command === "list_messages") {
+      return Promise.resolve([]);
+    }
+    if (command === "create_conversation") {
+      return createConversationPromise;
+    }
+    if (command === "send_message") {
+      return Promise.resolve("assistant-new-chat");
+    }
+    return Promise.resolve("");
+  });
+
+  render(<App />);
+  await waitFor(() => {
+    expect(invokeMock).toHaveBeenCalledWith("list_conversations");
+  });
+
+  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+    target: { value: "hello new chat" },
+  });
+
+  const form = screen.getByRole("button", { name: "Send" }).closest("form");
+  expect(form).not.toBeNull();
+  fireEvent.submit(form as HTMLFormElement);
+  fireEvent.submit(form as HTMLFormElement);
+
+  await waitFor(() => {
+    const createCalls = invokeMock.mock.calls.filter(
+      ([command]) => command === "create_conversation",
+    );
+    expect(createCalls).toHaveLength(1);
+  });
+
+  resolveCreateConversation?.("conv-new");
+
+  await waitFor(() => {
+    const sendCalls = invokeMock.mock.calls.filter(([command]) => command === "send_message");
+    expect(sendCalls).toHaveLength(1);
+  });
+});
+
 test("renders pending approval card and calls approve command", async () => {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "list_conversations") {

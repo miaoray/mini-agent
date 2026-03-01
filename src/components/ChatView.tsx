@@ -214,47 +214,47 @@ export default function ChatView() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (isStreaming || isSubmitting) {
-      return;
-    }
     const content = input.trim();
     if (!content) {
       return;
     }
+    if (isStreaming || isSubmitting) {
+      return;
+    }
+    setIsSubmitting(true);
     setError(null);
 
-    let conversationId = currentConversationId;
-    if (!conversationId) {
-      conversationId = await invoke<string>("create_conversation");
-      setCurrentConversation(conversationId);
-      await refreshConversations();
-    }
-
-    upsertMessage({
-      id: `user-${Date.now()}`,
-      conversationId,
-      role: "user",
-      content,
-    });
-
-    let assistantMessageId = "";
-    setIsSubmitting(true);
     try {
-      assistantMessageId = await invoke<string>("send_message", {
+      let conversationId = currentConversationId;
+      if (!conversationId) {
+        conversationId = await invoke<string>("create_conversation");
+        setCurrentConversation(conversationId);
+        await refreshConversations();
+      }
+
+      upsertMessage({
+        id: `user-${Date.now()}`,
+        conversationId,
+        role: "user",
+        content,
+      });
+
+      const assistantMessageId = await invoke<string>("send_message", {
         conversation_id: conversationId,
         content,
       });
+
+      upsertMessage({
+        id: assistantMessageId,
+        conversationId,
+        role: "assistant",
+        content: "",
+      });
+      setStreaming(conversationId, assistantMessageId, true);
+      setInput("");
     } finally {
       setIsSubmitting(false);
     }
-    upsertMessage({
-      id: assistantMessageId,
-      conversationId,
-      role: "assistant",
-      content: "",
-    });
-    setStreaming(conversationId, assistantMessageId, true);
-    setInput("");
   }
 
   async function approvePending(approvalId: string) {
