@@ -28,3 +28,6 @@ test-results/
 *.njsproj
 *.sln
 *.sw?
+
+# Plan and execution logs (local tracking only)
+docs/plans/
