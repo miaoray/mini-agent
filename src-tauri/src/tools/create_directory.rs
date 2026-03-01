@@ -99,7 +99,12 @@ mod tests {
     #[tokio::test]
     async fn create_directory_rejects_absolute_path() {
         let tool = CreateDirectoryTool::new();
-        let result = tool.execute(json!({ "path": "/tmp/forbidden" })).await;
+        let absolute_path = if cfg!(target_os = "windows") {
+            "C:\\forbidden"
+        } else {
+            "/tmp/forbidden"
+        };
+        let result = tool.execute(json!({ "path": absolute_path })).await;
         assert!(result.is_err());
     }
 }

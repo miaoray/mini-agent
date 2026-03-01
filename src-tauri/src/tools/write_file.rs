@@ -113,8 +113,13 @@ mod tests {
     #[tokio::test]
     async fn write_file_rejects_absolute_path() {
         let tool = WriteFileTool::new();
+        let absolute_path = if cfg!(target_os = "windows") {
+            "C:\\forbidden.txt"
+        } else {
+            "/tmp/forbidden.txt"
+        };
         let result = tool
-            .execute(json!({ "path": "/tmp/forbidden.txt", "content": "x" }))
+            .execute(json!({ "path": absolute_path, "content": "x" }))
             .await;
         assert!(result.is_err());
     }

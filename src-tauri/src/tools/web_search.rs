@@ -164,7 +164,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use futures::future::BoxFuture;
+    use futures::future::{pending, BoxFuture};
     use serde_json::json;
 
     use super::{format_search_results, SearchResult, WebSearchProvider, WebSearchTool};
@@ -182,8 +182,7 @@ mod tests {
     impl WebSearchProvider for SlowProvider {
         fn search<'a>(&'a self, _query: &'a str) -> BoxFuture<'a, Result<Vec<SearchResult>, String>> {
             Box::pin(async {
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                Ok(vec![])
+                pending::<Result<Vec<SearchResult>, String>>().await
             })
         }
     }
