@@ -56,11 +56,6 @@ A lightweight desktop Agent app: chat with LLMs, web search, fetch content, and 
 - `src-tauri/`: Tauri 2 + Rust backend (LLM, tools, SQLite)
 - `.env.example`: Environment variable template (do not commit `.env`)
 
-## Docs and plans
-
-- **Design**: `docs/plans/2026-03-01-mini-agent-design.md` (domain model, architecture, acceptance scenarios)
-- **Implementation plan**: `docs/plans/2026-03-01-mini-agent-impl.md` (phased tasks and steps)
-- **Execution log**: `docs/plans/2026-03-01-mini-agent-impl-execution-log.md` (task status and remaining work)
 
 ## Platforms and status
 
