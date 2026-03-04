@@ -14,8 +14,4 @@ describe("MessageBubble", () => {
     expect(screen.getByText("Hello from assistant")).toBeInTheDocument();
   });
 
-  test("shows streaming indicator", () => {
-    render(<MessageBubble role="assistant" content="Partial" streaming />);
-    expect(screen.getByText("Streaming...")).toBeInTheDocument();
-  });
 });

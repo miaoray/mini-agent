@@ -63,6 +63,9 @@ impl From<serde_json::Error> for MiniMaxError {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    /// Anthropic-style content blocks (text, tool_use, tool_result). When set, used for Anthropic requests instead of content.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub content_blocks: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +79,19 @@ pub struct ToolCall {
 pub enum ChatCompletionOutput {
     Content(String),
     ToolCalls(Vec<ToolCall>),
+}
+
+/// Result of chat_completion_with_tools including optional thinking for display.
+#[derive(Debug, Clone)]
+pub struct ChatCompletionResult {
+    pub output: ChatCompletionOutput,
+    pub thinking: Option<String>,
+    /// Raw content blocks from Anthropic response (text, tool_use). Use for assistant message history.
+    pub raw_content_blocks: Option<Vec<serde_json::Value>>,
+    /// Raw request JSON for debugging
+    pub raw_request: Option<String>,
+    /// Raw response JSON for debugging
+    pub raw_response: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -125,7 +141,7 @@ impl MiniMaxClient {
         let response = self.send_chat_completion_request(model, messages, false).await?;
         if mode == ProviderMode::AnthropicCompatible {
             let payload: AnthropicMessagesResponse = response.json().await?;
-            return match parse_anthropic_output(payload)? {
+            return match parse_anthropic_output(payload)?.output {
                 ChatCompletionOutput::Content(content) => Ok(content),
                 ChatCompletionOutput::ToolCalls(_) => Err(MiniMaxError::MissingResponseContent),
             };
@@ -147,17 +163,28 @@ impl MiniMaxClient {
         model: &str,
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
-    ) -> Result<ChatCompletionOutput, MiniMaxError> {
+    ) -> Result<ChatCompletionResult, MiniMaxError> {
         let mode = detect_provider_mode(&self.base_url);
-        let response = self
-            .send_chat_completion_request_with_tools(model, messages, tools, false)
+        let (raw_request, response) = self
+            .send_chat_completion_request_with_tools_raw(model, messages, tools, false)
             .await?;
+        let body = response.text().await?;
+        let body_preview: String = body.chars().take(200).collect();
+        eprintln!(
+            "[mini-agent][llm] response raw_json_preview ({} chars)={:?}",
+            body.len(),
+            body_preview
+        );
+
         if mode == ProviderMode::AnthropicCompatible {
-            let payload: AnthropicMessagesResponse = response.json().await?;
-            return parse_anthropic_output(payload);
+            let payload: AnthropicMessagesResponse = serde_json::from_str(&body)?;
+            let mut result = parse_anthropic_output(payload)?;
+            result.raw_request = Some(raw_request);
+            result.raw_response = Some(body);
+            return Ok(result);
         }
 
-        let payload: OpenAiChatResponse = response.json().await?;
+        let payload: OpenAiChatResponse = serde_json::from_str(&body)?;
         let message = payload
             .choices
             .into_iter()
@@ -167,33 +194,45 @@ impl MiniMaxClient {
 
         if let Some(tool_calls) = message.tool_calls {
             if !tool_calls.is_empty() {
-                return Ok(ChatCompletionOutput::ToolCalls(
-                    tool_calls
-                        .into_iter()
-                        .map(|tool_call| {
-                            let function_name = tool_call
-                                .function
-                                .name
-                                .ok_or(MiniMaxError::MissingToolCallName)?;
-                            let function_arguments = tool_call
-                                .function
-                                .arguments
-                                .ok_or(MiniMaxError::MissingToolCallArguments)?;
-                            Ok(ToolCall {
-                                id: tool_call.id.unwrap_or_default(),
-                                function_name,
-                                function_arguments,
+                return Ok(ChatCompletionResult {
+                    output: ChatCompletionOutput::ToolCalls(
+                        tool_calls
+                            .into_iter()
+                            .map(|tool_call| {
+                                let function_name = tool_call
+                                    .function
+                                    .name
+                                    .ok_or(MiniMaxError::MissingToolCallName)?;
+                                let function_arguments = tool_call
+                                    .function
+                                    .arguments
+                                    .ok_or(MiniMaxError::MissingToolCallArguments)?;
+                                Ok(ToolCall {
+                                    id: tool_call.id.unwrap_or_default(),
+                                    function_name,
+                                    function_arguments,
+                                })
                             })
-                        })
-                        .collect::<Result<Vec<_>, MiniMaxError>>()?,
-                ));
+                            .collect::<Result<Vec<_>, MiniMaxError>>()?,
+                    ),
+                    thinking: None,
+                    raw_content_blocks: None,
+                    raw_request: Some(raw_request),
+                    raw_response: Some(body),
+                });
             }
         }
 
         message
             .content
             .filter(|content| !content.is_empty())
-            .map(ChatCompletionOutput::Content)
+            .map(|c| ChatCompletionResult {
+                output: ChatCompletionOutput::Content(c),
+                thinking: None,
+                raw_content_blocks: None,
+                raw_request: Some(raw_request),
+                raw_response: Some(body),
+            })
             .ok_or(MiniMaxError::MissingResponseContent)
     }
 
@@ -303,10 +342,10 @@ impl MiniMaxClient {
                 .await?
             }
             ProviderMode::AnthropicCompatible => {
-                let body = AnthropicMessagesRequest {
-                    model,
+                let body = AnthropicMessagesRequestBody {
+                    model: model.to_string(),
                     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
-                    messages,
+                    messages: chat_messages_to_anthropic(messages),
                     stream: false,
                     tools: None,
                 };
@@ -330,16 +369,16 @@ impl MiniMaxClient {
         Ok(response)
     }
 
-    async fn send_chat_completion_request_with_tools(
+    async fn send_chat_completion_request_with_tools_raw(
         &self,
         model: &str,
         messages: &[ChatMessage],
         tools: &[serde_json::Value],
         stream: bool,
-    ) -> Result<reqwest::Response, MiniMaxError> {
+    ) -> Result<(String, reqwest::Response), MiniMaxError> {
         let mode = detect_provider_mode(&self.base_url);
         let endpoint = build_chat_completion_endpoint(&self.base_url, mode);
-        let response = match mode {
+        let (raw_request, response) = match mode {
             ProviderMode::OpenAiCompatible => {
                 let body = OpenAiChatRequestWithTools {
                     model,
@@ -347,35 +386,41 @@ impl MiniMaxClient {
                     stream,
                     tools,
                 };
-                self.send_with_retries(|| {
-                    self.http_client
-                        .post(endpoint.clone())
-                        .bearer_auth(&self.api_key)
-                        .json(&body)
-                })
-                .await?
+                let raw = serde_json::to_string(&body).unwrap_or_default();
+                let resp = self
+                    .send_with_retries(|| {
+                        self.http_client
+                            .post(endpoint.clone())
+                            .bearer_auth(&self.api_key)
+                            .json(&body)
+                    })
+                    .await?;
+                (raw, resp)
             }
             ProviderMode::AnthropicCompatible => {
                 let anthropic_tools = map_openai_tools_to_anthropic(tools);
-                let body = AnthropicMessagesRequest {
-                    model,
+                let body = AnthropicMessagesRequestBody {
+                    model: model.to_string(),
                     max_tokens: ANTHROPIC_DEFAULT_MAX_TOKENS,
-                    messages,
+                    messages: chat_messages_to_anthropic(messages),
                     stream: false,
                     tools: if anthropic_tools.is_empty() {
                         None
                     } else {
-                        Some(anthropic_tools.as_slice())
+                        Some(anthropic_tools)
                     },
                 };
-                self.send_with_retries(|| {
-                    self.http_client
-                        .post(endpoint.clone())
-                        .bearer_auth(&self.api_key)
-                        .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
-                        .json(&body)
-                })
-                .await?
+                let raw = serde_json::to_string(&body).unwrap_or_default();
+                let resp = self
+                    .send_with_retries(|| {
+                        self.http_client
+                            .post(endpoint.clone())
+                            .bearer_auth(&self.api_key)
+                            .header("anthropic-version", ANTHROPIC_VERSION_HEADER)
+                            .json(&body)
+                    })
+                    .await?;
+                (raw, resp)
             }
         };
 
@@ -385,7 +430,7 @@ impl MiniMaxClient {
             return Err(MiniMaxError::UnexpectedStatus(status.as_u16(), response_body));
         }
 
-        Ok(response)
+        Ok((raw_request, response))
     }
 
     async fn send_with_retries<F>(&self, mut build_request: F) -> Result<reqwest::Response, MiniMaxError>
@@ -490,9 +535,32 @@ fn map_openai_tools_to_anthropic(tools: &[serde_json::Value]) -> Vec<serde_json:
 
 fn parse_anthropic_output(
     payload: AnthropicMessagesResponse,
-) -> Result<ChatCompletionOutput, MiniMaxError> {
+) -> Result<ChatCompletionResult, MiniMaxError> {
+    let block_summary: Vec<(String, usize, usize)> = payload
+        .content
+        .iter()
+        .map(|b| {
+            (
+                b.block_type.clone(),
+                b.text.as_ref().map(|t| t.len()).unwrap_or(0),
+                b.thinking.as_ref().map(|t| t.len()).unwrap_or(0),
+            )
+        })
+        .collect();
+    eprintln!(
+        "[mini-agent][parse_anthropic] content_blocks count={} blocks={:?}",
+        payload.content.len(),
+        block_summary
+    );
+
     let mut text_segments = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut thinking_segments = Vec::new();
+    let raw_blocks: Vec<serde_json::Value> = payload
+        .content
+        .iter()
+        .filter_map(|b| serde_json::to_value(b).ok())
+        .collect();
 
     for block in payload.content {
         match block.block_type.as_str() {
@@ -500,6 +568,13 @@ fn parse_anthropic_output(
                 if let Some(text) = block.text {
                     if !text.is_empty() {
                         text_segments.push(text);
+                    }
+                }
+            }
+            "thinking" => {
+                if let Some(t) = block.thinking {
+                    if !t.is_empty() {
+                        thinking_segments.push(t);
                     }
                 }
             }
@@ -520,16 +595,51 @@ fn parse_anthropic_output(
         }
     }
 
+    let thinking = if thinking_segments.is_empty() {
+        None
+    } else {
+        Some(thinking_segments.join("\n\n"))
+    };
+
+    let raw_content_blocks = if raw_blocks.is_empty() {
+        None
+    } else {
+        Some(raw_blocks)
+    };
+
     if !tool_calls.is_empty() {
-        return Ok(ChatCompletionOutput::ToolCalls(tool_calls));
+        eprintln!(
+            "[mini-agent][parse_anthropic] ToolCalls count={} thinking_len={}",
+            tool_calls.len(),
+            thinking.as_ref().map(|t| t.len()).unwrap_or(0)
+        );
+        return Ok(ChatCompletionResult {
+            output: ChatCompletionOutput::ToolCalls(tool_calls),
+            thinking,
+            raw_content_blocks,
+            raw_request: None,
+            raw_response: None,
+        });
     }
 
     let text = text_segments.join("");
+    eprintln!(
+        "[mini-agent][parse_anthropic] parsed text_len={} thinking_len={} text_preview={:?}",
+        text.len(),
+        thinking.as_ref().map(|t| t.len()).unwrap_or(0),
+        text.chars().take(80).collect::<String>()
+    );
     if text.is_empty() {
         return Err(MiniMaxError::MissingResponseContent);
     }
 
-    Ok(ChatCompletionOutput::Content(text))
+    Ok(ChatCompletionResult {
+        output: ChatCompletionOutput::Content(text),
+        thinking,
+        raw_content_blocks,
+        raw_request: None,
+        raw_response: None,
+    })
 }
 
 pub fn parse_sse_delta_line(line: &str) -> Result<Option<String>, MiniMaxError> {
@@ -683,14 +793,27 @@ struct OpenAiChatRequestWithTools<'a> {
     tools: &'a [serde_json::Value],
 }
 
+fn chat_messages_to_anthropic(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
+    messages
+        .iter()
+        .map(|m| {
+            let content: serde_json::Value = match &m.content_blocks {
+                Some(blocks) => serde_json::Value::Array(blocks.clone()),
+                None => serde_json::json!([{ "type": "text", "text": m.content }]),
+            };
+            serde_json::json!({ "role": m.role, "content": content })
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize)]
-struct AnthropicMessagesRequest<'a> {
-    model: &'a str,
+struct AnthropicMessagesRequestBody {
+    model: String,
     max_tokens: u32,
-    messages: &'a [ChatMessage],
+    messages: Vec<serde_json::Value>,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<&'a [serde_json::Value]>,
+    tools: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -741,11 +864,12 @@ struct AnthropicMessagesResponse {
     content: Vec<AnthropicContentBlock>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct AnthropicContentBlock {
     #[serde(rename = "type")]
     block_type: String,
     text: Option<String>,
+    thinking: Option<String>,
     id: Option<String>,
     name: Option<String>,
     input: Option<serde_json::Value>,
@@ -784,6 +908,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: "hello".to_string(),
+            content_blocks: None,
         }];
 
         let response = client
@@ -814,6 +939,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: "ping".to_string(),
+            content_blocks: None,
         }];
 
         let response = client
@@ -840,6 +966,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: "hello".to_string(),
+            content_blocks: None,
         }];
 
         let streamed = client
@@ -890,6 +1017,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: "hello".to_string(),
+            content_blocks: None,
         }];
 
         let response = client
@@ -943,6 +1071,7 @@ mod tests {
         let messages = vec![ChatMessage {
             role: "user".to_string(),
             content: "search it".to_string(),
+            content_blocks: None,
         }];
         let tools = vec![json!({
             "type": "function",
@@ -959,13 +1088,13 @@ mod tests {
             }
         })];
 
-        let response = client
+        let result = client
             .chat_completion_with_tools("MiniMax-M2.5", &messages, &tools)
             .await
             .expect("anthropic-compatible tool_use response should parse");
 
         assert_eq!(
-            response,
+            result.output,
             ChatCompletionOutput::ToolCalls(vec![super::ToolCall {
                 id: "toolu_123".to_string(),
                 function_name: "web_search".to_string(),

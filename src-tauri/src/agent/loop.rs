@@ -26,6 +26,7 @@ pub fn build_messages_for_llm(
         row.map(|message| ChatMessage {
             role: message.role,
             content: message.content,
+            content_blocks: None,
         })
     })
     .collect()

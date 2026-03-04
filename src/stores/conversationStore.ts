@@ -14,6 +14,8 @@ export type ChatMessage = {
   conversationId: string;
   role: "user" | "assistant";
   content: string;
+  /** LLM thinking content, shown in collapsible section for assistant messages */
+  thinking?: string;
 };
 
 export type PendingApproval = {
@@ -34,14 +36,18 @@ type ConversationState = {
   activeConversationId: string | null;
   activeMessageId: string | null;
   isStreaming: boolean;
+  activeThinking: string | null;
   error: string | null;
   setCurrentConversation: (conversationId: string | null) => void;
   setConversations: (conversations: Conversation[]) => void;
   setMessagesForConversation: (conversationId: string, messages: ChatMessage[]) => void;
   upsertMessage: (message: ChatMessage) => void;
   appendDelta: (conversationId: string, messageId: string, delta: string) => void;
+  replaceDelta: (conversationId: string, messageId: string, content: string) => void;
   setStreaming: (conversationId: string | null, messageId: string | null, streaming: boolean) => void;
   clearStreaming: () => void;
+  setActiveThinking: (thinking: string | null) => void;
+  setWaiting: (waiting: boolean) => void;
   setError: (error: string | null) => void;
   upsertPendingApproval: (approval: PendingApproval) => void;
   resolveApproval: (approvalId: string) => void;
@@ -57,6 +63,7 @@ export const useConversationStore = create<ConversationState>((set) => ({
   activeConversationId: null,
   activeMessageId: null,
   isStreaming: false,
+  activeThinking: null,
   error: null,
   setCurrentConversation: (conversationId) => set({ currentConversationId: conversationId }),
   setConversations: (conversations) => set({ conversations }),
@@ -91,31 +98,28 @@ export const useConversationStore = create<ConversationState>((set) => ({
     }),
   appendDelta: (conversationId, messageId, delta) =>
     set((state) => {
-      const existing = state.messagesByConversation[conversationId] ?? [];
-      const messageIndex = existing.findIndex((item) => item.id === messageId);
-      if (messageIndex === -1) {
-        return {
-          messagesByConversation: {
-            ...state.messagesByConversation,
-            [conversationId]: [
-              ...existing,
-              {
-                id: messageId,
-                conversationId,
-                role: "assistant",
-                content: delta,
-              },
-            ],
-          },
-        };
-      }
-
-      const next = [...existing];
-      const current = next[messageIndex];
+      const messages = state.messagesByConversation[conversationId] ?? [];
+      const messageIndex = messages.findIndex((item) => item.id === messageId);
+      if (messageIndex === -1) return state;
+      const next = [...messages];
       next[messageIndex] = {
-        ...current,
-        content: `${current.content}${delta}`,
+        ...next[messageIndex],
+        content: next[messageIndex].content + delta,
       };
+      return {
+        messagesByConversation: {
+          ...state.messagesByConversation,
+          [conversationId]: next,
+        },
+      };
+    }),
+  replaceDelta: (conversationId, messageId, content) =>
+    set((state) => {
+      const messages = state.messagesByConversation[conversationId] ?? [];
+      const messageIndex = messages.findIndex((item) => item.id === messageId);
+      if (messageIndex === -1) return state;
+      const next = [...messages];
+      next[messageIndex] = { ...next[messageIndex], content };
       return {
         messagesByConversation: {
           ...state.messagesByConversation,
@@ -134,7 +138,10 @@ export const useConversationStore = create<ConversationState>((set) => ({
       activeConversationId: null,
       activeMessageId: null,
       isStreaming: false,
+      activeThinking: null,
     }),
+  setActiveThinking: (thinking) => set({ activeThinking: thinking }),
+  setWaiting: (waiting) => set({ isStreaming: waiting }),
   setError: (error) => set({ error }),
   upsertPendingApproval: (approval) =>
     set((state) => {

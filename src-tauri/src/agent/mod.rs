@@ -17,10 +17,10 @@ pub struct ProviderRuntime {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ChatDeltaEvent {
+pub struct ChatThinkingEvent {
     pub conversation_id: String,
     pub message_id: String,
-    pub delta: String,
+    pub thinking: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +28,8 @@ pub struct ChatDeltaEvent {
 pub struct ChatDoneEvent {
     pub conversation_id: String,
     pub message_id: String,
+    /// Final assistant content; frontend should set message content to this.
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

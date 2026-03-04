@@ -76,3 +76,20 @@ CREATE INDEX IF NOT EXISTS idx_message_conversation
 
 CREATE INDEX IF NOT EXISTS idx_pending_approval_status
     ON pending_approval (status);
+
+CREATE TABLE IF NOT EXISTS llm_debug_log (
+    id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
+    request_json TEXT NOT NULL,
+    response_json TEXT,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (turn_id) REFERENCES agent_turn(id)
+);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_llm_debug_log_turn
+    ON llm_debug_log (turn_id);

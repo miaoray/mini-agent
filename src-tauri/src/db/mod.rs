@@ -7,6 +7,7 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Manager};
 
 pub mod conversation;
+pub mod debug;
 pub mod message;
 pub mod provider;
 

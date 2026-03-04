@@ -23,16 +23,17 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
         created_at: number;
       };
       type MockState = {
-        conversations: Conversation[];
-        messagesByConversation: Record<string, Message[]>;
-        pendingApprovals: Array<{
-          approval_id: string;
-          conversation_id: string;
-          message_id: string;
-          action_type: string;
-          payload: { path: string; content?: string };
-        }>;
-      };
+  conversations: Conversation[];
+  messagesByConversation: Record<string, Message[]>;
+  pendingApprovals: Array<{
+    approval_id: string;
+    conversation_id: string;
+    message_id: string;
+    action_type: string;
+    payload: { path: string; content?: string };
+  }>;
+  customResponses: Record<string, { request: unknown; response: unknown }>;
+};
 
       const STORAGE_KEY = "__mini_agent_e2e_mock_state__";
       let idCounter = 1;
@@ -54,16 +55,17 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
         try {
           const raw = window.localStorage.getItem(STORAGE_KEY);
           if (!raw) {
-            return { conversations: [], messagesByConversation: {}, pendingApprovals: [] };
+            return { conversations: [], messagesByConversation: {}, pendingApprovals: [], customResponses: {} };
           }
           const parsed = JSON.parse(raw) as Partial<MockState>;
           return {
             conversations: parsed.conversations ?? [],
             messagesByConversation: parsed.messagesByConversation ?? {},
             pendingApprovals: parsed.pendingApprovals ?? [],
+            customResponses: parsed.customResponses ?? {},
           };
         } catch {
-          return { conversations: [], messagesByConversation: {}, pendingApprovals: [] };
+          return { conversations: [], messagesByConversation: {}, pendingApprovals: [], customResponses: {} };
         }
       }
 
@@ -156,6 +158,20 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
         switch (cmd) {
           case "check_config":
             return { hasApiKey };
+          case "__set_custom_response__": {
+            const requestPattern = String(args.requestPattern ?? "");
+            const responseJson = String(args.responseJson ?? "{}");
+            const state = loadState();
+            if (!state.customResponses) {
+              state.customResponses = {};
+            }
+            state.customResponses[requestPattern] = {
+              request: requestPattern,
+              response: JSON.parse(responseJson),
+            };
+            saveState(state);
+            return true;
+          }
           case "list_conversations": {
             const state = loadState();
             return state.conversations;
@@ -184,18 +200,46 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
           case "send_message": {
             const conversationId = String(args.conversationId ?? args.conversation_id ?? "");
             const userContent = String(args.content ?? "");
+            const providedAssistantMessageId = String(args.assistantMessageId ?? args.assistant_message_id ?? "");
+            const providedUserMessageId = String(args.userMessageId ?? args.user_message_id ?? "");
             if (!conversationId) {
               throw new Error("missing required key conversationId");
             }
 
             const state = loadState();
             const timestamp = nowTs();
-            const userMessageId = nextId("user");
-            const assistantMessageId = nextId("assistant");
-            const assistantContent = `Mock assistant reply: ${userContent}`;
-            const half = Math.max(1, Math.floor(assistantContent.length / 2));
-            const firstChunk = assistantContent.slice(0, half);
-            const secondChunk = assistantContent.slice(half);
+            const userMessageId = providedUserMessageId || nextId("user");
+            const assistantMessageId = providedAssistantMessageId || nextId("assistant");
+
+            let assistantContent = "";
+            let thinkingContent = "";
+            let useCustomResponse = false;
+
+            const customResponses = state.customResponses ?? {};
+            const keys = Object.keys(customResponses);
+            for (const key of keys) {
+              if (userContent.toLowerCase().includes(key.toLowerCase())) {
+                const custom = customResponses[key];
+                const resp = custom.response as {
+                  content?: Array<{ thinking?: string; text?: string; type: string }>;
+                };
+                if (resp.content) {
+                  for (const block of resp.content) {
+                    if (block.type === "thinking") {
+                      thinkingContent = block.thinking ?? "";
+                    } else if (block.type === "text") {
+                      assistantContent += block.text ?? "";
+                    }
+                  }
+                  useCustomResponse = true;
+                }
+                break;
+              }
+            }
+
+            if (!useCustomResponse) {
+              assistantContent = `Mock assistant reply: ${userContent}`;
+            }
 
             state.messagesByConversation[conversationId] = [
               ...(state.messagesByConversation[conversationId] ?? []),
@@ -249,22 +293,31 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
               return assistantMessageId;
             }
 
+            if (thinkingContent) {
+              window.setTimeout(() => {
+                console.debug(
+                  "[mockTauri][chat-thinking] EMIT conversation_id=",
+                  conversationId,
+                  "message_id=",
+                  assistantMessageId,
+                  "thinking_len=",
+                  thinkingContent.length,
+                  "preview=",
+                  thinkingContent.slice(0, 80)
+                );
+                emit("chat-thinking", {
+                  conversation_id: conversationId,
+                  message_id: assistantMessageId,
+                  thinking: thinkingContent,
+                });
+              }, 5);
+            }
+
             window.setTimeout(() => {
-              emit("chat-delta", {
-                conversation_id: conversationId,
-                message_id: assistantMessageId,
-                delta: firstChunk,
-              });
-            }, 5);
-            window.setTimeout(() => {
-              emit("chat-delta", {
-                conversation_id: conversationId,
-                message_id: assistantMessageId,
-                delta: secondChunk,
-              });
               emit("chat-done", {
                 conversation_id: conversationId,
                 message_id: assistantMessageId,
+                content: assistantContent,
               });
               const nextState = loadState();
               const messages = nextState.messagesByConversation[conversationId] ?? [];
@@ -298,14 +351,10 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                 message_id: approval.message_id,
                 status: "approved",
               });
-              emit("chat-delta", {
-                conversation_id: approval.conversation_id,
-                message_id: approval.message_id,
-                delta: approvedReply,
-              });
               emit("chat-done", {
                 conversation_id: approval.conversation_id,
                 message_id: approval.message_id,
+                content: approvedReply,
               });
             }, 5);
             return null;
@@ -333,18 +382,20 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                 message_id: approval.message_id,
                 status: "rejected",
               });
-              emit("chat-delta", {
-                conversation_id: approval.conversation_id,
-                message_id: approval.message_id,
-                delta: rejectedReply,
-              });
               emit("chat-done", {
                 conversation_id: approval.conversation_id,
                 message_id: approval.message_id,
+                content: rejectedReply,
               });
             }, 5);
             return null;
           }
+          case "get_debug_mode":
+            return false;
+          case "set_debug_mode":
+            return null;
+          case "list_debug_logs":
+            return [];
           default:
             throw new Error(`mock invoke not implemented for command: ${cmd}`);
         }
