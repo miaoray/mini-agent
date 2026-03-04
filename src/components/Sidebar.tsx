@@ -1,4 +1,5 @@
 import type { Conversation } from "../stores/conversationStore";
+import DebugPanel from "./DebugPanel";
 
 type SidebarProps = {
   conversations: Conversation[];
@@ -39,6 +40,7 @@ export default function Sidebar({
           ))
         )}
       </nav>
+      <DebugPanel />
     </aside>
   );
 }

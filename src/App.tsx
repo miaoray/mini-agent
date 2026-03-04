@@ -3,20 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import ChatView from "./components/ChatView";
 import ConfigBanner from "./components/ConfigBanner";
 import Sidebar from "./components/Sidebar";
-import {
-  useConversationStore,
-  type ChatMessage,
-  type Conversation,
-} from "./stores/conversationStore";
+import { useConversationStore, type Conversation } from "./stores/conversationStore";
+import { hydrateConversationMessages } from "./lib/conversationHydrate";
+import { setupTauriListeners, teardownTauriListeners } from "./eventBridge";
 import "./App.css";
-
-type BackendMessage = {
-  id: string;
-  conversation_id: string;
-  role: "user" | "assistant";
-  content: string;
-  created_at: number;
-};
 
 type ConfigCheckResponse = {
   hasApiKey: boolean;
@@ -28,7 +18,6 @@ function App() {
     currentConversationId,
     setCurrentConversation,
     setConversations,
-    setMessagesForConversation,
   } = useConversationStore((state) => state);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
 
@@ -38,35 +27,34 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!currentConversationId) {
-      return;
-    }
+    void setupTauriListeners();
+    return () => teardownTauriListeners();
+  }, []);
+
+  useEffect(() => {
+    if (!currentConversationId) return;
+    console.debug("[hydrate-trigger] currentConversationId changed to", currentConversationId);
     void hydrateConversationMessages(currentConversationId);
   }, [currentConversationId]);
 
-  function toChatMessage(message: BackendMessage): ChatMessage {
-    return {
-      id: message.id,
-      conversationId: message.conversation_id,
-      role: message.role,
-      content: message.content,
-    };
-  }
-
-  async function hydrateConversationMessages(conversationId: string) {
-    const dbMessages = await invoke<BackendMessage[]>("list_messages", {
-      conversationId,
-    });
-    setMessagesForConversation(conversationId, dbMessages.map(toChatMessage));
-  }
+  const LAST_CONV_KEY = "mini-agent-last-conversation-id";
 
   async function refreshConversations() {
     const list = await invoke<Conversation[]>("list_conversations");
     setConversations(list);
     if (list.length > 0 && !useConversationStore.getState().currentConversationId) {
-      setCurrentConversation(list[0].id);
+      const saved = localStorage.getItem(LAST_CONV_KEY);
+      const valid =
+        saved && list.some((c) => c.id === saved);
+      setCurrentConversation(valid ? saved : list[0].id);
     }
   }
+
+  useEffect(() => {
+    if (currentConversationId) {
+      localStorage.setItem(LAST_CONV_KEY, currentConversationId);
+    }
+  }, [currentConversationId]);
 
   async function loadConfigState() {
     try {

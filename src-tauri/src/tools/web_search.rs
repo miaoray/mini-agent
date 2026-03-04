@@ -1,4 +1,6 @@
 use futures::future::BoxFuture;
+use reqwest::Url;
+use scraper::{Html, Selector};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
@@ -7,7 +9,11 @@ use crate::tools::{ToolDef, ToolImpl};
 
 const MAX_RESULTS: usize = 5;
 const DEFAULT_SNIPPET_CHARS: usize = 150;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(15);
+const HTML_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const FALLBACK_DDG_HTML_ENDPOINT: &str = "https://html.duckduckgo.com/html/";
+const FALLBACK_USER_AGENT: &str =
+    "mini-agent/0.1 (+https://github.com/miaoray/mini-agent)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchResult {
@@ -88,14 +94,106 @@ struct DuckDuckGoProvider;
 impl WebSearchProvider for DuckDuckGoProvider {
     fn search<'a>(&'a self, query: &'a str) -> BoxFuture<'a, Result<Vec<SearchResult>, String>> {
         Box::pin(async move {
+            // Try HTML fallback first: we control its timeout (8s), and duckduckgo.com/html/
+            // is typically faster than api.duckduckgo.com (SDK has no timeout, often slow/hangs).
+            eprintln!(
+                "[mini-agent][web_search] query={:?} provider=html_fallback (primary)",
+                query
+            );
+            let html_results = search_duckduckgo_html_fallback(query).await;
+            if let Ok(ref results) = html_results {
+                if !results.is_empty() {
+                    eprintln!(
+                        "[mini-agent][web_search] html_fallback_results_count={} query={:?}",
+                        results.len(),
+                        query
+                    );
+                    return Ok(results.clone());
+                }
+            }
+            if let Err(e) = &html_results {
+                eprintln!(
+                    "[mini-agent][web_search] html_fallback failed: {} query={:?}",
+                    e, query
+                );
+            }
+
+            // Fall back to SDK when HTML returns empty or errors.
+            eprintln!(
+                "[mini-agent][web_search] trying sdk fallback query={:?}",
+                query
+            );
             let client = duckduckgo_search::DuckDuckGoSearch::new();
             let raw_results = client.search(query).await.map_err(|err| err.to_string())?;
-            Ok(raw_results
+            let results: Vec<SearchResult> = raw_results
                 .into_iter()
                 .map(|(text, url)| text_to_result(text, url))
-                .collect())
+                .collect();
+            eprintln!(
+                "[mini-agent][web_search] sdk_results_count={} query={:?}",
+                results.len(),
+                query
+            );
+            Ok(results)
         })
     }
+}
+
+async fn search_duckduckgo_html_fallback(query: &str) -> Result<Vec<SearchResult>, String> {
+    let mut url = Url::parse(FALLBACK_DDG_HTML_ENDPOINT).map_err(|err| err.to_string())?;
+    url.query_pairs_mut().append_pair("q", query);
+    let client = reqwest::Client::builder()
+        .timeout(HTML_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|err| err.to_string())?;
+    let html = client
+        .get(url)
+        .header("user-agent", FALLBACK_USER_AGENT)
+        .send()
+        .await
+        .map_err(|err| format!("fallback search request failed: {err}"))?
+        .error_for_status()
+        .map_err(|err| format!("fallback search request failed: {err}"))?
+        .text()
+        .await
+        .map_err(|err| format!("fallback search body read failed: {err}"))?;
+    Ok(parse_duckduckgo_html_results(&html))
+}
+
+fn parse_duckduckgo_html_results(html: &str) -> Vec<SearchResult> {
+    let document = Html::parse_document(html);
+    let title_selector = Selector::parse("a.result__a")
+        .expect("hardcoded selector a.result__a should parse successfully");
+    let snippet_selector = Selector::parse("a.result__snippet, div.result__snippet")
+        .expect("hardcoded snippet selectors should parse successfully");
+
+    let snippets: Vec<String> = document
+        .select(&snippet_selector)
+        .map(|node| sanitize_whitespace(&node.text().collect::<Vec<_>>().join(" ")))
+        .collect();
+
+    let mut results = Vec::new();
+    for (idx, link) in document.select(&title_selector).enumerate() {
+        let title = sanitize_whitespace(&link.text().collect::<Vec<_>>().join(" "));
+        let url = link
+            .value()
+            .attr("href")
+            .map(sanitize_whitespace)
+            .unwrap_or_default();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        let snippet = snippets.get(idx).cloned().unwrap_or_default();
+        results.push(SearchResult {
+            title,
+            snippet,
+            url,
+        });
+        if results.len() >= MAX_RESULTS {
+            break;
+        }
+    }
+    results
 }
 
 pub struct WebSearchTool {
@@ -150,9 +248,15 @@ impl ToolImpl for WebSearchTool {
     fn execute(&self, args: Value) -> BoxFuture<'_, Result<String, String>> {
         Box::pin(async move {
             let query = Self::parse_query(&args)?;
+            eprintln!("[mini-agent][web_search] execute query={:?}", query);
             let results = tokio::time::timeout(self.timeout, self.provider.search(&query))
                 .await
                 .map_err(|_| "web search timed out".to_string())??;
+            eprintln!(
+                "[mini-agent][web_search] execute completed query={:?} result_count={}",
+                query,
+                results.len()
+            );
             Ok(format_search_results(&results, DEFAULT_SNIPPET_CHARS))
         })
     }
@@ -195,6 +299,19 @@ mod tests {
             .enable_time()
             .build()
             .expect("tokio test runtime should build");
+        runtime.block_on(future)
+    }
+
+    /// Runtime with IO for network tests (e.g. web_search_live).
+    fn run_on_tokio_with_io<F>(future: F) -> Result<String, String>
+    where
+        F: Future<Output = Result<String, String>> + Send,
+    {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .build()
+            .expect("tokio runtime with io should build");
         runtime.block_on(future)
     }
 
@@ -280,5 +397,47 @@ mod tests {
 
         let result = run_on_tokio(tool.execute(json!({ "query": "rust" })));
         assert_eq!(result, Err("web search timed out".to_string()));
+    }
+
+    #[test]
+    fn parse_duckduckgo_html_results_extracts_title_snippet_and_url() {
+        let html = r#"
+        <html>
+          <body>
+            <div class="result">
+              <a class="result__a" href="https://example.com/a">Result A</a>
+              <div class="result__snippet">Snippet A</div>
+            </div>
+            <div class="result">
+              <a class="result__a" href="https://example.com/b">Result B</a>
+              <a class="result__snippet">Snippet B</a>
+            </div>
+          </body>
+        </html>
+        "#;
+
+        let parsed = super::parse_duckduckgo_html_results(html);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].title, "Result A");
+        assert_eq!(parsed[0].snippet, "Snippet A");
+        assert_eq!(parsed[0].url, "https://example.com/a");
+        assert_eq!(parsed[1].title, "Result B");
+        assert_eq!(parsed[1].snippet, "Snippet B");
+        assert_eq!(parsed[1].url, "https://example.com/b");
+    }
+
+    /// Integration test: hits real DuckDuckGo. Run with `cargo test web_search_live -- --ignored`.
+    #[test]
+    #[ignore = "requires network; run with: cargo test web_search_live -- --ignored"]
+    fn web_search_live_returns_results_within_timeout() {
+        let tool = WebSearchTool::new();
+        let result = run_on_tokio_with_io(tool.execute(json!({ "query": "rust programming" })));
+        assert!(result.is_ok(), "web_search should succeed: {:?}", result);
+        let output = result.unwrap();
+        assert!(
+            !output.is_empty() && output != "No results found.",
+            "expected non-empty results, got: {:?}",
+            output
+        );
     }
 }

@@ -1,49 +1,8 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import ApprovalCard from "./ApprovalCard";
 import MessageList from "./MessageList";
 import { useConversationStore, type Conversation } from "../stores/conversationStore";
-
-type TurnEventPayload = {
-  conversation_id?: string;
-  conversationId?: string;
-  message_id?: string;
-  messageId?: string;
-};
-
-type ChatDeltaPayload = TurnEventPayload & { delta?: string };
-type ChatErrorPayload = TurnEventPayload & { message?: string };
-type PendingApprovalPayload = TurnEventPayload & {
-  approval_id?: string;
-  approvalId?: string;
-  action_type?: string;
-  actionType?: string;
-  payload?: {
-    path?: string;
-    content?: string;
-  };
-};
-type ApprovalResolvedPayload = TurnEventPayload & {
-  approval_id?: string;
-  approvalId?: string;
-};
-
-function payloadConversationId(payload: TurnEventPayload | null | undefined) {
-  return payload?.conversationId ?? payload?.conversation_id ?? "";
-}
-
-function payloadMessageId(payload: TurnEventPayload | null | undefined) {
-  return payload?.messageId ?? payload?.message_id ?? "";
-}
-
-function payloadApprovalId(payload: PendingApprovalPayload | ApprovalResolvedPayload | null | undefined) {
-  return payload?.approvalId ?? payload?.approval_id ?? "";
-}
-
-function payloadActionType(payload: PendingApprovalPayload | null | undefined) {
-  return payload?.actionType ?? payload?.action_type ?? "";
-}
 
 export default function ChatView() {
   const [input, setInput] = useState("");
@@ -53,18 +12,15 @@ export default function ChatView() {
     messagesByConversation,
     pendingApprovals,
     approvalBusy,
-    activeMessageId,
     isStreaming,
+    activeThinking,
     error,
     setCurrentConversation,
     setConversations,
     upsertMessage,
-    appendDelta,
-    setStreaming,
-    clearStreaming,
+    setWaiting,
+    setActiveThinking,
     setError,
-    upsertPendingApproval,
-    resolveApproval,
     setApprovalBusy,
   } = useConversationStore((state) => state);
 
@@ -72,140 +28,6 @@ export default function ChatView() {
   const visibleApprovals = currentConversationId
     ? pendingApprovals.filter((item) => item.conversationId === currentConversationId)
     : pendingApprovals;
-
-  useEffect(() => {
-    let unlistenDelta: UnlistenFn | null = null;
-    let unlistenDone: UnlistenFn | null = null;
-    let unlistenError: UnlistenFn | null = null;
-    let unlistenPendingApproval: UnlistenFn | null = null;
-    let unlistenApprovalResolved: UnlistenFn | null = null;
-    let mounted = true;
-
-    const setupListeners = async () => {
-      try {
-        unlistenDelta = await listen<ChatDeltaPayload>("chat-delta", (event) => {
-          if (!mounted) {
-            return;
-          }
-          const payload = event.payload;
-          const nextConversationId = payloadConversationId(payload);
-          const nextMessageId = payloadMessageId(payload);
-          const state = useConversationStore.getState();
-          if (
-            nextConversationId !== state.activeConversationId ||
-            nextMessageId !== state.activeMessageId
-          ) {
-            return;
-          }
-          appendDelta(nextConversationId, nextMessageId, payload?.delta ?? "");
-          setStreaming(nextConversationId, nextMessageId, true);
-        });
-
-        unlistenDone = await listen<TurnEventPayload>("chat-done", (event) => {
-          if (!mounted) {
-            return;
-          }
-          const payload = event.payload;
-          const nextConversationId = payloadConversationId(payload);
-          const nextMessageId = payloadMessageId(payload);
-          const state = useConversationStore.getState();
-          if (
-            nextConversationId !== state.activeConversationId ||
-            nextMessageId !== state.activeMessageId
-          ) {
-            return;
-          }
-          clearStreaming();
-        });
-
-        unlistenError = await listen<ChatErrorPayload>("chat-error", (event) => {
-          if (!mounted) {
-            return;
-          }
-          const payload = event.payload;
-          const nextConversationId = payloadConversationId(payload);
-          const nextMessageId = payloadMessageId(payload);
-          const state = useConversationStore.getState();
-          if (
-            nextConversationId !== state.activeConversationId ||
-            nextMessageId !== state.activeMessageId
-          ) {
-            return;
-          }
-          const message = payload?.message ?? "Unknown error";
-          upsertMessage({
-            id: nextMessageId,
-            conversationId: nextConversationId,
-            role: "assistant",
-            content: `Error: ${message}`,
-          });
-          setError(`Error: ${message}`);
-          clearStreaming();
-        });
-
-        unlistenPendingApproval = await listen<PendingApprovalPayload>("pending-approval", (event) => {
-          if (!mounted) {
-            return;
-          }
-          const payload = event.payload;
-          const approvalId = payloadApprovalId(payload);
-          if (!approvalId) {
-            return;
-          }
-          upsertPendingApproval({
-            approvalId,
-            conversationId: payloadConversationId(payload),
-            messageId: payloadMessageId(payload),
-            actionType: payloadActionType(payload),
-            path: payload?.payload?.path ?? "",
-            content: payload?.payload?.content,
-          });
-        });
-
-        unlistenApprovalResolved = await listen<ApprovalResolvedPayload>("approval-resolved", (event) => {
-          if (!mounted) {
-            return;
-          }
-          const approvalId = payloadApprovalId(event.payload);
-          if (!approvalId) {
-            return;
-          }
-          resolveApproval(approvalId);
-        });
-      } catch {
-        // Ignore listener setup in non-Tauri environments (e.g. browser tests).
-      }
-    };
-
-    void setupListeners();
-
-    return () => {
-      mounted = false;
-      if (unlistenDelta) {
-        unlistenDelta();
-      }
-      if (unlistenDone) {
-        unlistenDone();
-      }
-      if (unlistenError) {
-        unlistenError();
-      }
-      if (unlistenPendingApproval) {
-        unlistenPendingApproval();
-      }
-      if (unlistenApprovalResolved) {
-        unlistenApprovalResolved();
-      }
-    };
-  }, [
-    appendDelta,
-    clearStreaming,
-    resolveApproval,
-    setError,
-    setStreaming,
-    upsertMessage,
-    upsertPendingApproval,
-  ]);
 
   async function refreshConversations() {
     const conversations = await invoke<Conversation[]>("list_conversations");
@@ -223,6 +45,7 @@ export default function ChatView() {
     }
     setIsSubmitting(true);
     setError(null);
+    setActiveThinking(null);
 
     try {
       let conversationId = currentConversationId;
@@ -232,15 +55,13 @@ export default function ChatView() {
         await refreshConversations();
       }
 
+      const userMessageId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      const assistantMessageId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
       upsertMessage({
-        id: `user-${Date.now()}`,
+        id: userMessageId,
         conversationId,
         role: "user",
-        content,
-      });
-
-      const assistantMessageId = await invoke<string>("send_message", {
-        conversationId,
         content,
       });
 
@@ -250,7 +71,16 @@ export default function ChatView() {
         role: "assistant",
         content: "",
       });
-      setStreaming(conversationId, assistantMessageId, true);
+
+      setWaiting(true);
+
+      await invoke<string>("send_message", {
+        conversationId,
+        content,
+        assistantMessageId,
+        userMessageId,
+      });
+
       setInput("");
     } catch (caughtError: unknown) {
       const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
@@ -301,11 +131,14 @@ export default function ChatView() {
         </section>
       ) : null}
 
-      <MessageList
-        messages={visibleMessages}
-        streamingMessageId={activeMessageId}
-        isStreaming={isStreaming}
-      />
+      {activeThinking ? (
+        <section className="thinking-panel" data-testid="thinking-panel">
+          <p className="thinking-label">Thinking</p>
+          <pre className="thinking-content">{activeThinking}</pre>
+        </section>
+      ) : null}
+
+      <MessageList messages={visibleMessages} />
 
       {error ? (
         <p role="alert" className="chat-error">

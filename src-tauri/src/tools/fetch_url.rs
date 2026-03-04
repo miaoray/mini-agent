@@ -59,13 +59,34 @@ impl ToolImpl for FetchUrlTool {
 
             let client = build_fetch_client()?;
 
-            fetch_url_with_client(url, &client, false).await
+            match fetch_url_with_client(url, &client, false).await {
+                Ok(s) => Ok(s),
+                Err(e) => {
+                    if is_security_rejection(&e) {
+                        Err(e)
+                    } else {
+                        Ok(format!(
+                            "Fetch failed: {}. Consider trying other website URLs or opening the URL in a browser.",
+                            e
+                        ))
+                    }
+                }
+            }
         })
     }
 }
 
 fn build_fetch_client() -> Result<reqwest::Client, String> {
     build_bound_fetch_client(None)
+}
+
+/// Returns true if the error is a security rejection (invalid URL, blocked host, etc.)
+/// that should propagate as Err. Network/connection failures return false for soft-fail.
+fn is_security_rejection(err: &str) -> bool {
+    err.contains("invalid url")
+        || err.contains("url scheme must be")
+        || err.contains("url host is not allowed")
+        || err.contains("url must include")
 }
 
 async fn fetch_url_with_client(

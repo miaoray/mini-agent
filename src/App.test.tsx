@@ -32,6 +32,7 @@ beforeEach(() => {
     activeConversationId: null,
     activeMessageId: null,
     isStreaming: false,
+    activeThinking: null,
     error: null,
   });
 });
@@ -151,8 +152,8 @@ test("hydrates messages for initial and selected conversation", async () => {
   });
 });
 
-test("sends a message and streams assistant response", async () => {
-  invokeMock.mockImplementation(async (command: string) => {
+test("sends a message and receives assistant response via chat-done", async () => {
+  invokeMock.mockImplementation(async (command: string, args?: { assistantMessageId?: string }) => {
     if (command === "list_conversations") {
       return [
         {
@@ -169,13 +170,12 @@ test("sends a message and streams assistant response", async () => {
       return [];
     }
     if (command === "send_message") {
-      return "assistant-1";
+      return args?.assistantMessageId ?? "assistant-1";
     }
     return "";
   });
   render(<App />);
   await waitFor(() => {
-    expect(listeners.has("chat-delta")).toBe(true);
     expect(listeners.has("chat-done")).toBe(true);
     expect(listeners.has("chat-error")).toBe(true);
     expect(listeners.has("pending-approval")).toBe(true);
@@ -187,41 +187,29 @@ test("sends a message and streams assistant response", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
+  let assistantMessageId: string = "assistant-1";
   await waitFor(() => {
-    expect(invokeMock).toHaveBeenCalledWith("send_message", {
+    const sendCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "send_message");
+    expect(sendCalls.length).toBeGreaterThan(0);
+    assistantMessageId = sendCalls[0][1]?.assistantMessageId ?? "assistant-1";
+    expect(invokeMock).toHaveBeenCalledWith("send_message", expect.objectContaining({
       conversationId: "conv-1",
       content: "hello",
-    });
-  });
-
-  emit("chat-delta", {
-    conversation_id: "other-conversation",
-    message_id: "other-message",
-    delta: "ignored",
-  });
-  expect(screen.queryByText("ignored")).not.toBeInTheDocument();
-
-  emit("chat-delta", {
-    conversation_id: "conv-1",
-    message_id: "assistant-1",
-    delta: "accepted",
-  });
-  await waitFor(() => {
-    expect(screen.getByText("accepted")).toBeInTheDocument();
-    expect(screen.getByText("Streaming...")).toBeInTheDocument();
+    }));
   });
 
   emit("chat-done", {
     conversation_id: "conv-1",
-    message_id: "assistant-1",
+    message_id: assistantMessageId,
+    content: "Hello! How can I help you?",
   });
   await waitFor(() => {
-    expect(screen.queryByText("Streaming...")).not.toBeInTheDocument();
+    expect(screen.getByText("Hello! How can I help you?")).toBeInTheDocument();
   });
 });
 
-test("handles chat-error by stopping stream and showing message", async () => {
-  invokeMock.mockImplementation(async (command: string) => {
+test("handles chat-error by showing error message", async () => {
+  invokeMock.mockImplementation(async (command: string, args?: { assistantMessageId?: string }) => {
     if (command === "list_conversations") {
       return [
         {
@@ -238,13 +226,12 @@ test("handles chat-error by stopping stream and showing message", async () => {
       return [];
     }
     if (command === "send_message") {
-      return "assistant-2";
+      return args?.assistantMessageId ?? "assistant-2";
     }
     return "";
   });
   render(<App />);
   await waitFor(() => {
-    expect(listeners.has("chat-delta")).toBe(true);
     expect(listeners.has("chat-done")).toBe(true);
     expect(listeners.has("chat-error")).toBe(true);
     expect(listeners.has("pending-approval")).toBe(true);
@@ -256,30 +243,24 @@ test("handles chat-error by stopping stream and showing message", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
+  let assistantMessageId: string = "assistant-2";
   await waitFor(() => {
-    expect(invokeMock).toHaveBeenCalledWith("send_message", {
+    const sendCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "send_message");
+    expect(sendCalls.length).toBeGreaterThan(0);
+    assistantMessageId = sendCalls[0][1]?.assistantMessageId ?? "assistant-2";
+    expect(invokeMock).toHaveBeenCalledWith("send_message", expect.objectContaining({
       conversationId: "conv-2",
       content: "hello",
-    });
-  });
-
-  emit("chat-delta", {
-    conversation_id: "conv-2",
-    message_id: "assistant-2",
-    delta: "partial",
-  });
-  await waitFor(() => {
-    expect(screen.getByText("Streaming...")).toBeInTheDocument();
+    }));
   });
 
   emit("chat-error", {
     conversation_id: "conv-2",
-    message_id: "assistant-2",
+    message_id: assistantMessageId,
     message: "model failed",
   });
 
   await waitFor(() => {
-    expect(screen.queryByText("Streaming...")).not.toBeInTheDocument();
     expect(screen.getByText("Error: model failed", { selector: ".chat-error" })).toBeInTheDocument();
   });
 });
@@ -309,8 +290,6 @@ test("disables submit and blocks send while streaming", async () => {
 
   useConversationStore.setState({
     currentConversationId: "conv-stream",
-    activeConversationId: "conv-stream",
-    activeMessageId: "assistant-stream",
     isStreaming: true,
   });
 
@@ -430,7 +409,7 @@ test("blocks rapid second submit while create_conversation is pending in new cha
 });
 
 test("renders pending approval card and calls approve command", async () => {
-  invokeMock.mockImplementation(async (command: string) => {
+  invokeMock.mockImplementation(async (command: string, args?: { assistantMessageId?: string }) => {
     if (command === "list_conversations") {
       return [
         {
@@ -447,7 +426,7 @@ test("renders pending approval card and calls approve command", async () => {
       return [];
     }
     if (command === "send_message") {
-      return "assistant-3";
+      return args?.assistantMessageId ?? "assistant-3";
     }
     if (command === "approve_action") {
       return null;
@@ -465,16 +444,20 @@ test("renders pending approval card and calls approve command", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
+  let assistantMessageId: string = "assistant-3";
   await waitFor(() => {
-    expect(invokeMock).toHaveBeenCalledWith("send_message", {
+    const sendCalls = invokeMock.mock.calls.filter(([cmd]) => cmd === "send_message");
+    expect(sendCalls.length).toBeGreaterThan(0);
+    assistantMessageId = sendCalls[0][1]?.assistantMessageId ?? "assistant-3";
+    expect(invokeMock).toHaveBeenCalledWith("send_message", expect.objectContaining({
       conversationId: "conv-3",
       content: "make files",
-    });
+    }));
   });
 
   emit("pending-approval", {
     conversation_id: "conv-3",
-    message_id: "assistant-3",
+    message_id: assistantMessageId,
     approval_id: "approval-1",
     action_type: "write_file",
     payload: {
