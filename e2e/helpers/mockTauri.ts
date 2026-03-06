@@ -318,6 +318,7 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                 conversation_id: conversationId,
                 message_id: assistantMessageId,
                 content: assistantContent,
+                hasThinking: !!thinkingContent,
               });
               const nextState = loadState();
               const messages = nextState.messagesByConversation[conversationId] ?? [];
@@ -355,6 +356,7 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                 conversation_id: approval.conversation_id,
                 message_id: approval.message_id,
                 content: approvedReply,
+                hasThinking: false,
               });
             }, 5);
             return null;
@@ -386,6 +388,7 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                 conversation_id: approval.conversation_id,
                 message_id: approval.message_id,
                 content: rejectedReply,
+                hasThinking: false,
               });
             }, 5);
             return null;

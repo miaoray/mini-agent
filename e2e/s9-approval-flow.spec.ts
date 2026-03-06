@@ -5,7 +5,7 @@ test("approval flow: accept resolves pending action", async ({ page }) => {
   await installMockTauri(page, { hasApiKey: true });
   await page.goto("/");
 
-  await page.getByPlaceholder("Type a message...").fill("please write file for me");
+  await page.getByPlaceholder("Send a message...").fill("please write file for me");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByText("Pending approval: write_file")).toBeVisible();
@@ -21,7 +21,7 @@ test("approval flow: reject resolves pending action", async ({ page }) => {
   await installMockTauri(page, { hasApiKey: true });
   await page.goto("/");
 
-  await page.getByPlaceholder("Type a message...").fill("please write file then reject");
+  await page.getByPlaceholder("Send a message...").fill("please write file then reject");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByText("Pending approval: write_file")).toBeVisible();

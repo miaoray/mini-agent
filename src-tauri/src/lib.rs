@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
+use tauri::async_runtime;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
@@ -193,6 +194,12 @@ fn list_conversations(state: tauri::State<'_, db::DbState>) -> Result<Vec<db::co
 }
 
 #[tauri::command]
+fn clear_all_conversations(state: tauri::State<'_, db::DbState>) -> Result<(), String> {
+    let conn = state.connection()?;
+    db::conversation::clear_all_conversations(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_messages(
     state: tauri::State<'_, db::DbState>,
     conversation_id: String,
@@ -240,7 +247,7 @@ async fn send_message(
     let app_handle = app.clone();
     let background_conversation_id = conversation_id.clone();
     let background_message_id = assistant_message_id.clone();
-    tokio::spawn(async move {
+    async_runtime::spawn(async move {
         if let Err(err) = run_agent_turn(
             &app_handle,
             background_conversation_id.clone(),
@@ -269,7 +276,7 @@ async fn send_message(
 }
 
 #[tauri::command]
-fn approve_action(
+async fn approve_action(
     app: tauri::AppHandle,
     state: tauri::State<'_, db::DbState>,
     approval_id: String,
@@ -294,7 +301,7 @@ fn approve_action(
 }
 
 #[tauri::command]
-fn reject_action(
+async fn reject_action(
     app: tauri::AppHandle,
     state: tauri::State<'_, db::DbState>,
     approval_id: String,
@@ -422,6 +429,7 @@ async fn run_agent_turn(
     let mut final_assistant_content = String::new();
     let mut accumulated_content = String::new();
     let mut paused_for_approval = false;
+    let mut had_thinking = false;
     let mut tool_call_counts: HashMap<String, usize> = HashMap::new();
     let mut latest_tool_result: Option<String> = None;
 
@@ -510,8 +518,10 @@ async fn run_agent_turn(
         }
 
         if let Some(ref thinking) = result.thinking {
+            had_thinking = true;
             eprintln!(
-                "[mini-agent][chat-thinking] EMIT conversation_id={} message_id={} thinking_len={} preview={:?}",
+                "[mini-agent][chat-thinking] EMIT step={} conversation_id={} message_id={} thinking_len={} preview={:?}",
+                step,
                 conversation_id,
                 assistant_message_id,
                 thinking.len(),
@@ -808,6 +818,7 @@ async fn run_agent_turn(
                 conversation_id: conversation_id.clone(),
                 message_id: assistant_message_id.clone(),
                 content: content_to_emit,
+                has_thinking: had_thinking,
             },
         )
         .map_err(|e| e.to_string())?;
@@ -902,7 +913,7 @@ fn spawn_resumed_agent_turn(
     provider_runtime: agent::ProviderRuntime,
 ) {
     let app_handle = app.clone();
-    tokio::spawn(async move {
+    async_runtime::spawn(async move {
         if let Err(err) = run_agent_turn(
             &app_handle,
             conversation_id.clone(),
@@ -1129,6 +1140,7 @@ pub fn run() {
             greet,
             create_conversation,
             list_conversations,
+            clear_all_conversations,
             list_messages,
             get_conversation,
             send_message,

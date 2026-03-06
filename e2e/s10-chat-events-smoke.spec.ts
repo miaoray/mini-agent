@@ -9,7 +9,7 @@ test("chat events flow - delta and done events", async ({ page }) => {
   await installMockTauri(page, { hasApiKey: true });
   await page.goto("/");
 
-  await page.getByPlaceholder("Type a message...").fill("hello");
+  await page.getByPlaceholder("Send a message...").fill("hello");
   await page.getByRole("button", { name: "Send" }).click();
 
   await expect(page.getByText("Mock assistant reply: hello")).toBeVisible();
@@ -37,11 +37,11 @@ test("multiple messages in sequence", async ({ page }) => {
   await installMockTauri(page, { hasApiKey: true });
   await page.goto("/");
 
-  await page.getByPlaceholder("Type a message...").fill("first message");
+  await page.getByPlaceholder("Send a message...").fill("first message");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Mock assistant reply: first message")).toBeVisible();
 
-  await page.getByPlaceholder("Type a message...").fill("second message");
+  await page.getByPlaceholder("Send a message...").fill("second message");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Mock assistant reply: second message")).toBeVisible();
 });

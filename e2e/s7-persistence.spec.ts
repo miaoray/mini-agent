@@ -5,7 +5,7 @@ test("conversation persistence after reload", async ({ page }) => {
   await installMockTauri(page, { hasApiKey: true });
   await page.goto("/");
 
-  await page.getByPlaceholder("Type a message...").fill("persist this message");
+  await page.getByPlaceholder("Send a message...").fill("persist this message");
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Mock assistant reply: persist this message")).toBeVisible();
 

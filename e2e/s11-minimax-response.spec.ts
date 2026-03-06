@@ -54,7 +54,7 @@ test("MiniMax response with thinking and text content blocks", async ({ page }) 
   await installMockTauri(page, { hasApiKey: true });
   await page.goto("/");
 
-  await page.getByPlaceholder("Type a message...").fill(CUSTOM_RESPONSE_KEY);
+  await page.getByPlaceholder("Send a message...").fill(CUSTOM_RESPONSE_KEY);
   await page.getByRole("button", { name: "Send" }).click();
 
   // Wait for response

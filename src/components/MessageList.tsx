@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../stores/conversationStore";
 import MessageBubble from "./MessageBubble";
+import ThinkingPanel from "./ThinkingPanel";
 
 function parseAssistantContent(content: string): { toolProcess: string; finalContent: string } {
   if (!content) return { toolProcess: "", finalContent: "" };
@@ -19,16 +20,31 @@ function parseAssistantContent(content: string): { toolProcess: string; finalCon
 
 type MessageListProps = {
   messages: ChatMessage[];
+  /** Active streaming thinking; shown in-place before last assistant message */
+  activeThinking?: string | null;
+  activeThinkingConversationId?: string | null;
+  currentConversationId?: string | null;
+  onThinkingComplete?: () => void;
 };
 
-export default function MessageList({ messages }: MessageListProps) {
+export default function MessageList({
+  messages,
+  activeThinking,
+  activeThinkingConversationId,
+  currentConversationId,
+  onThinkingComplete,
+}: MessageListProps) {
   if (messages.length === 0) {
     return <p className="message-empty">No messages yet.</p>;
   }
 
+  const showActiveThinking =
+    activeThinking &&
+    (!activeThinkingConversationId || activeThinkingConversationId === currentConversationId);
+
   return (
     <section className="message-list">
-      {messages.map((message) => {
+      {messages.map((message, index) => {
         if (message.role === "user") {
           return (
             <MessageBubble
@@ -40,13 +56,18 @@ export default function MessageList({ messages }: MessageListProps) {
           );
         }
         const { toolProcess, finalContent } = parseAssistantContent(message.content);
+        const isLastAssistant = index === messages.length - 1;
+        const useActiveThinking = isLastAssistant && showActiveThinking;
         return (
           <div key={message.id} className="assistant-message-group">
-            {message.thinking ? (
-              <section className="thinking-panel" data-testid="thinking-panel">
-                <p className="thinking-label">Thinking</p>
-                <pre className="thinking-content">{message.thinking}</pre>
-              </section>
+            {useActiveThinking ? (
+              <ThinkingPanel
+                content={activeThinking!}
+                streaming
+                onComplete={onThinkingComplete}
+              />
+            ) : message.thinking ? (
+              <ThinkingPanel content={message.thinking} />
             ) : null}
             {toolProcess ? (
               <MessageBubble

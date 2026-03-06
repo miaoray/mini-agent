@@ -18,7 +18,7 @@ test("callback id not found smoke test", async ({ page }) => {
   await page.goto("/");
 
   // Send a simple message
-  await page.getByPlaceholder("Type a message...").fill("你好");
+  await page.getByPlaceholder("Send a message...").fill("你好");
   await page.getByRole("button", { name: "Send" }).click();
 
   // Wait for chat to complete

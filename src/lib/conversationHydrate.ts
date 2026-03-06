@@ -18,15 +18,24 @@ function toChatMessage(message: BackendMessage): ChatMessage {
   };
 }
 
+/** Per-conversation version; incremented on each hydrate request. Stale results are discarded. */
+const hydrateVersions: Record<string, number> = {};
+
 /**
  * Hydrate: 从 DB 拉取消息并与内存中的消息合并，作为会话的权威数据源。
  * 触发时机：1) 切换会话时 (currentConversationId 变化)  2) chat-done 后 (eventBridge)
  * 合并逻辑：db 为主，memory 中 content 更长或带 thinking 的覆盖 db；memoryOnly 追加到末尾
+ * 串行化：同一 conversationId 的并发 hydrate 中，仅最新请求的结果会写入 store，避免覆盖。
  */
 export async function hydrateConversationMessages(conversationId: string): Promise<void> {
+  const version = (hydrateVersions[conversationId] ?? 0) + 1;
+  hydrateVersions[conversationId] = version;
+
   const dbMessages = await invoke<BackendMessage[]>("list_messages", {
     conversationId,
   });
+
+  if (hydrateVersions[conversationId] !== version) return;
   const dbChatMessages = dbMessages.map(toChatMessage);
   const dbIds = new Set(dbChatMessages.map((m) => m.id));
   const memoryMessages =
@@ -41,6 +50,8 @@ export async function hydrateConversationMessages(conversationId: string): Promi
     return dbMsg;
   });
   const final = [...merged, ...memoryOnly];
+  if (hydrateVersions[conversationId] !== version) return;
+
   console.debug(
     "[hydrate] conv=",
     conversationId,

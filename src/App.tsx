@@ -20,6 +20,7 @@ function App() {
     setConversations,
   } = useConversationStore((state) => state);
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useEffect(() => {
     void refreshConversations();
@@ -71,6 +72,13 @@ function App() {
     setCurrentConversation(conversationId);
   }
 
+  async function handleClearAllConversations() {
+    await invoke("clear_all_conversations");
+    setConversations([]);
+    useConversationStore.getState().clearMessages();
+    localStorage.removeItem(LAST_CONV_KEY);
+  }
+
   return (
     <>
       {hasApiKey !== null ? <ConfigBanner hasApiKey={hasApiKey} /> : null}
@@ -82,6 +90,11 @@ function App() {
           onNewChat={() => {
             void handleNewChat();
           }}
+          onClearAllConversations={() => {
+            void handleClearAllConversations();
+          }}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed((c) => !c)}
         />
         <ChatView />
       </main>

@@ -37,6 +37,10 @@ type ConversationState = {
   activeMessageId: string | null;
   isStreaming: boolean;
   activeThinking: string | null;
+  /** Conversation ID for activeThinking; only show when it matches currentConversationId */
+  activeThinkingConversationId: string | null;
+  /** Deferred message from chat-done; flushed when thinking typewriter completes */
+  pendingChatDone: { conversationId: string; messageId: string; content: string; thinking?: string } | null;
   error: string | null;
   setCurrentConversation: (conversationId: string | null) => void;
   setConversations: (conversations: Conversation[]) => void;
@@ -46,15 +50,21 @@ type ConversationState = {
   replaceDelta: (conversationId: string, messageId: string, content: string) => void;
   setStreaming: (conversationId: string | null, messageId: string | null, streaming: boolean) => void;
   clearStreaming: () => void;
-  setActiveThinking: (thinking: string | null) => void;
+  setActiveThinking: (thinking: string | null, conversationId?: string | null) => void;
+  /** Append thinking for same conversation (multi-turn); replaces if different conv */
+  appendActiveThinking: (thinking: string, conversationId: string) => void;
+  setPendingChatDone: (pending: { conversationId: string; messageId: string; content: string; thinking?: string } | null) => void;
+  /** Flush pending message; returns conversationId if flushed for hydrate */
+  flushPendingMessage: () => string | null;
   setWaiting: (waiting: boolean) => void;
   setError: (error: string | null) => void;
   upsertPendingApproval: (approval: PendingApproval) => void;
   resolveApproval: (approvalId: string) => void;
   setApprovalBusy: (approvalId: string, busy: boolean) => void;
+  clearMessages: () => void;
 };
 
-export const useConversationStore = create<ConversationState>((set) => ({
+export const useConversationStore = create<ConversationState>((set, get) => ({
   currentConversationId: null,
   conversations: [],
   messagesByConversation: {},
@@ -64,6 +74,8 @@ export const useConversationStore = create<ConversationState>((set) => ({
   activeMessageId: null,
   isStreaming: false,
   activeThinking: null,
+  activeThinkingConversationId: null,
+  pendingChatDone: null,
   error: null,
   setCurrentConversation: (conversationId) => set({ currentConversationId: conversationId }),
   setConversations: (conversations) => set({ conversations }),
@@ -139,8 +151,60 @@ export const useConversationStore = create<ConversationState>((set) => ({
       activeMessageId: null,
       isStreaming: false,
       activeThinking: null,
+      activeThinkingConversationId: null,
     }),
-  setActiveThinking: (thinking) => set({ activeThinking: thinking }),
+  setActiveThinking: (thinking, conversationId) =>
+    set({
+      activeThinking: thinking,
+      activeThinkingConversationId: thinking != null ? (conversationId ?? null) : null,
+    }),
+  appendActiveThinking: (thinking, conversationId) =>
+    set((state) => {
+      if (!thinking) return state;
+      const sameConv = state.activeThinkingConversationId === conversationId && state.activeThinking;
+      const next = sameConv
+        ? `${state.activeThinking}\n\n${thinking}`
+        : thinking;
+      return {
+        activeThinking: next,
+        activeThinkingConversationId: conversationId,
+      };
+    }),
+  setPendingChatDone: (pending) => set({ pendingChatDone: pending }),
+  flushPendingMessage: (): string | null => {
+    const state = get();
+    const pending = state.pendingChatDone;
+    if (!pending) return null;
+    const existing = state.messagesByConversation[pending.conversationId] ?? [];
+    const messageIndex = existing.findIndex((item: ChatMessage) => item.id === pending.messageId);
+    const next =
+      messageIndex >= 0
+        ? existing.map((m: ChatMessage, i: number) =>
+            i === messageIndex
+              ? { ...m, content: pending.content, thinking: pending.thinking }
+              : m
+          )
+        : [
+            ...existing,
+            {
+              id: pending.messageId,
+              conversationId: pending.conversationId,
+              role: "assistant" as const,
+              content: pending.content,
+              thinking: pending.thinking,
+            },
+          ];
+    set({
+      pendingChatDone: null,
+      activeThinking: null,
+      activeThinkingConversationId: null,
+      messagesByConversation: {
+        ...state.messagesByConversation,
+        [pending.conversationId]: next,
+      },
+    });
+    return pending.conversationId;
+  },
   setWaiting: (waiting) => set({ isStreaming: waiting }),
   setError: (error) => set({ error }),
   upsertPendingApproval: (approval) =>
@@ -168,5 +232,19 @@ export const useConversationStore = create<ConversationState>((set) => ({
         delete next[approvalId];
       }
       return { approvalBusy: next };
+    }),
+  clearMessages: () =>
+    set({
+      messagesByConversation: {},
+      pendingApprovals: [],
+      approvalBusy: {},
+      currentConversationId: null,
+      activeConversationId: null,
+      activeMessageId: null,
+      isStreaming: false,
+      activeThinking: null,
+      activeThinkingConversationId: null,
+      pendingChatDone: null,
+      error: null,
     }),
 }));

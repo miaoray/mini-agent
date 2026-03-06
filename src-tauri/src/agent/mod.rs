@@ -30,6 +30,8 @@ pub struct ChatDoneEvent {
     pub message_id: String,
     /// Final assistant content; frontend should set message content to this.
     pub content: String,
+    /// True if chat-thinking was emitted for this turn; frontend defers upsert until typewriter completes.
+    pub has_thinking: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

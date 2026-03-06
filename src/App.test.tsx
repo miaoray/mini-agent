@@ -60,7 +60,7 @@ test("renders sidebar and chat view", async () => {
   });
   render(<App />);
   expect(screen.getByRole("main")).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "New Chat" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "New chat" })).toBeInTheDocument();
   await waitFor(() => {
     expect(invokeMock).toHaveBeenCalledWith("list_conversations");
   });
@@ -182,10 +182,10 @@ test("sends a message and receives assistant response via chat-done", async () =
     expect(listeners.has("approval-resolved")).toBe(true);
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+  fireEvent.change(screen.getByPlaceholderText("Send a message..."), {
     target: { value: "hello" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  fireEvent.click(screen.getByRole("button", { name: /Send/i }));
 
   let assistantMessageId: string = "assistant-1";
   await waitFor(() => {
@@ -238,10 +238,10 @@ test("handles chat-error by showing error message", async () => {
     expect(listeners.has("approval-resolved")).toBe(true);
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+  fireEvent.change(screen.getByPlaceholderText("Send a message..."), {
     target: { value: "hello" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  fireEvent.click(screen.getByRole("button", { name: /Send/i }));
 
   let assistantMessageId: string = "assistant-2";
   await waitFor(() => {
@@ -294,10 +294,10 @@ test("disables submit and blocks send while streaming", async () => {
   });
 
   render(<App />);
-  const sendButton = screen.getByRole("button", { name: "Send" });
+  const sendButton = screen.getByRole("button", { name: /Send/i });
   expect(sendButton).toBeDisabled();
 
-  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+  fireEvent.change(screen.getByPlaceholderText("Send a message..."), {
     target: { value: "should not send" },
   });
   fireEvent.submit(sendButton.closest("form") as HTMLFormElement);
@@ -339,11 +339,11 @@ test("blocks rapid second submit while send_message is pending", async () => {
     expect(invokeMock).toHaveBeenCalledWith("list_conversations");
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+  fireEvent.change(screen.getByPlaceholderText("Send a message..."), {
     target: { value: "hello pending" },
   });
 
-  const form = screen.getByRole("button", { name: "Send" }).closest("form");
+  const form = screen.getByRole("button", { name: /Send/i }).closest("form");
   expect(form).not.toBeNull();
   fireEvent.submit(form as HTMLFormElement);
   fireEvent.submit(form as HTMLFormElement);
@@ -353,7 +353,7 @@ test("blocks rapid second submit while send_message is pending", async () => {
     expect(sendCalls).toHaveLength(1);
   });
 
-  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /Send/i })).toBeDisabled();
   resolveSendMessage("assistant-pending");
 });
 
@@ -384,11 +384,11 @@ test("blocks rapid second submit while create_conversation is pending in new cha
     expect(invokeMock).toHaveBeenCalledWith("list_conversations");
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+  fireEvent.change(screen.getByPlaceholderText("Send a message..."), {
     target: { value: "hello new chat" },
   });
 
-  const form = screen.getByRole("button", { name: "Send" }).closest("form");
+  const form = screen.getByRole("button", { name: /Send/i }).closest("form");
   expect(form).not.toBeNull();
   fireEvent.submit(form as HTMLFormElement);
   fireEvent.submit(form as HTMLFormElement);
@@ -439,10 +439,10 @@ test("renders pending approval card and calls approve command", async () => {
     expect(listeners.has("approval-resolved")).toBe(true);
   });
 
-  fireEvent.change(screen.getByPlaceholderText("Type a message..."), {
+  fireEvent.change(screen.getByPlaceholderText("Send a message..."), {
     target: { value: "make files" },
   });
-  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  fireEvent.click(screen.getByRole("button", { name: /Send/i }));
 
   let assistantMessageId: string = "assistant-3";
   await waitFor(() => {

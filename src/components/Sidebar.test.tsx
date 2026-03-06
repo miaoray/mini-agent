@@ -14,7 +14,7 @@ describe("Sidebar", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "New Chat" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New chat" })).toBeInTheDocument();
   });
 
   test("renders conversation list entries", () => {

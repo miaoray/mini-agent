@@ -173,7 +173,53 @@ UI：每个待确认操作展示为卡片，含操作类型、路径、内容预
 
 ---
 
-## 9. 下一步
+## 9. Tauri 事件监听与 React Strict Mode
+
+### 9.1 问题
+
+React 18 Strict Mode 在开发环境下会 **double-invoke** `useEffect`（mount → unmount → mount），用于检测副作用。若 `setupTauriListeners` 在 `useEffect` 中注册 Tauri 事件，且为异步，会导致：
+
+- 第一次 setup 尚未完成即 unmount
+- 第二次 setup 开始，teardown 清理
+- 第一次 setup 的异步流程可能仍在执行，继续往 `unlisteners` 中 push
+- **同一事件存在两个 listener**，每次 emit 触发两次（如 chat-thinking 收到 18 次、后端发送 9 次）
+
+### 9.2 解决方案
+
+1. **setup 前先 teardown**：每次 `setupTauriListeners` 开头调用 `teardownTauriListeners()`，移除已有 listener，再注册新的。
+2. **listenerGeneration 防竞态**：
+   - 每次 setup 开始时 `myGen = ++listenerGeneration`
+   - 每次 `await listen(...)` 后检查 `myGen !== listenerGeneration`
+   - 若已被新一轮 setup 覆盖，则不再 push，避免旧 setup 在 teardown 之后继续注册
+
+3. **提前 return 时必须 unlisten**：当 `myGen !== listenerGeneration` 时，已通过 `await listen()` 注册的 listener 尚未 push 到 `unlisteners`，若直接 return 会变成**孤儿 listener**（永远留在 Tauri 中）。必须在 return 前调用所有已获得的 `unlisten()`，确保从 Tauri 移除。
+
+### 9.3 实现要点
+
+```typescript
+let listenerGeneration = 0;
+
+export async function setupTauriListeners() {
+  teardownTauriListeners();
+  const myGen = ++listenerGeneration;
+  const unlisten1 = await listen("chat-thinking", handler);
+  if (myGen !== listenerGeneration) {
+    unlisten1();  // 必须调用，避免孤儿 listener
+    return;
+  }
+  unlisteners.push(unlisten1);
+  // ... 后续 listen 同理，return 前调用所有已注册的 unlisten
+}
+```
+
+### 9.4 验收
+
+- 前端 RECV 次数与后端 EMIT 次数一致
+- 同一事件不会触发两次 handler
+
+---
+
+## 10. 下一步
 
 1. 本设计文档已定稿
 2. 调用 **writing-plans** 技能，生成分阶段实现计划（任务拆分、依赖、测试）

@@ -44,54 +44,75 @@ function payloadActionType(payload: PendingApprovalPayload | null | undefined) {
 }
 
 const unlisteners: UnlistenFn[] = [];
+/** 防止 Strict Mode double-invoke 导致重复注册；新 setup 时递增，旧 setup 的 push 会跳过 */
+let listenerGeneration = 0;
 
 /**
  * 注册 Tauri 事件监听器，与 React 生命周期解耦。
  * 在 App 挂载时调用一次，应用运行期间监听器保持稳定，避免 "Couldn't find callback id"。
+ * 注意：React Strict Mode 会 double-invoke useEffect，需在 setup 前 teardown 避免重复注册。
  */
 export async function setupTauriListeners(): Promise<void> {
+  teardownTauriListeners();
+  const myGen = ++listenerGeneration;
   try {
-    unlisteners.push(
-      await listen<TurnEventPayload & { thinking?: string }>("chat-thinking", (event) => {
+    const unlisten1 = await listen<TurnEventPayload & { thinking?: string }>("chat-thinking", (event) => {
         const payload = event.payload;
         const thinking = (payload as { thinking?: string }).thinking ?? "";
-        console.debug(
-          "[chat-thinking] RECV conversationId=",
-          payloadConversationId(payload),
-          "messageId=",
-          payloadMessageId(payload),
-          "thinking_len=",
-          thinking.length,
-          "preview=",
-          thinking.slice(0, 80)
-        );
-        useConversationStore.getState().setActiveThinking(thinking);
-      })
-    );
+        const convId = payloadConversationId(payload);
+        const store = useConversationStore.getState();
+        const existing = store.activeThinking;
+        if (existing && store.activeThinkingConversationId === convId) {
+          if (thinking.startsWith(existing)) {
+            store.setActiveThinking(thinking, convId);
+          } else {
+            store.appendActiveThinking(thinking, convId);
+          }
+        } else {
+          store.setActiveThinking(thinking, convId);
+        }
+      });
+    if (myGen !== listenerGeneration) {
+      unlisten1();
+      return;
+    }
+    unlisteners.push(unlisten1);
 
-    unlisteners.push(
-      await listen<TurnEventPayload & { content?: string }>("chat-done", (event) => {
+    const unlisten2 = await listen<TurnEventPayload & { content?: string; hasThinking?: boolean }>("chat-done", (event) => {
         const payload = event.payload;
         const nextConversationId = payloadConversationId(payload);
         const nextMessageId = payloadMessageId(payload);
         const content = payload?.content ?? "";
-        const thinking = useConversationStore.getState().activeThinking ?? undefined;
+        const hasThinking = payload?.hasThinking ?? false;
         const store = useConversationStore.getState();
-        store.upsertMessage({
-          id: nextMessageId,
-          conversationId: nextConversationId,
-          role: "assistant",
-          content,
-          thinking: thinking || undefined,
-        });
-        store.setActiveThinking(null);
+        const thinking = hasThinking ? (store.activeThinking ?? undefined) : undefined;
         store.setWaiting(false);
-        void hydrateConversationMessages(nextConversationId);
-      })
-    );
+        if (thinking) {
+          // Defer upsert until thinking typewriter completes; keep activeThinking for effect
+          store.setPendingChatDone({
+            conversationId: nextConversationId,
+            messageId: nextMessageId,
+            content,
+            thinking,
+          });
+        } else {
+          store.upsertMessage({
+            id: nextMessageId,
+            conversationId: nextConversationId,
+            role: "assistant",
+            content,
+          });
+          void hydrateConversationMessages(nextConversationId);
+        }
+      });
+    if (myGen !== listenerGeneration) {
+      unlisten1();
+      unlisten2();
+      return;
+    }
+    unlisteners.push(unlisten2);
 
-    unlisteners.push(
-      await listen<ChatErrorPayload>("chat-error", (event) => {
+    const unlisten3 = await listen<ChatErrorPayload>("chat-error", (event) => {
         const payload = event.payload;
         const nextConversationId = payloadConversationId(payload);
         const nextMessageId = payloadMessageId(payload);
@@ -105,12 +126,18 @@ export async function setupTauriListeners(): Promise<void> {
         });
         store.setError(`Error: ${message}`);
         store.setActiveThinking(null);
+        store.setPendingChatDone(null);
         store.setWaiting(false);
-      })
-    );
+      });
+    if (myGen !== listenerGeneration) {
+      unlisten1();
+      unlisten2();
+      unlisten3();
+      return;
+    }
+    unlisteners.push(unlisten3);
 
-    unlisteners.push(
-      await listen<PendingApprovalPayload>("pending-approval", (event) => {
+    const unlisten4 = await listen<PendingApprovalPayload>("pending-approval", (event) => {
         const payload = event.payload;
         const approvalId = payloadApprovalId(payload);
         if (!approvalId) return;
@@ -122,16 +149,30 @@ export async function setupTauriListeners(): Promise<void> {
           path: payload?.payload?.path ?? "",
           content: payload?.payload?.content,
         });
-      })
-    );
+      });
+    if (myGen !== listenerGeneration) {
+      unlisten1();
+      unlisten2();
+      unlisten3();
+      unlisten4();
+      return;
+    }
+    unlisteners.push(unlisten4);
 
-    unlisteners.push(
-      await listen<ApprovalResolvedPayload>("approval-resolved", (event) => {
+    const unlisten5 = await listen<ApprovalResolvedPayload>("approval-resolved", (event) => {
         const approvalId = payloadApprovalId(event.payload);
         if (!approvalId) return;
         useConversationStore.getState().resolveApproval(approvalId);
-      })
-    );
+      });
+    if (myGen !== listenerGeneration) {
+      unlisten1();
+      unlisten2();
+      unlisten3();
+      unlisten4();
+      unlisten5();
+      return;
+    }
+    unlisteners.push(unlisten5);
   } catch {
     // Ignore in non-Tauri environments (e.g. browser tests, e2e).
   }

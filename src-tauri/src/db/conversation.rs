@@ -35,6 +35,16 @@ pub fn create_conversation(conn: &Connection, provider_id: &str) -> Result<Conve
     })
 }
 
+pub fn clear_all_conversations(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM tool_invocation", [])?;
+    conn.execute("DELETE FROM llm_debug_log", [])?;
+    conn.execute("DELETE FROM agent_turn", [])?;
+    conn.execute("DELETE FROM pending_approval", [])?;
+    conn.execute("DELETE FROM message", [])?;
+    conn.execute("DELETE FROM conversation", [])?;
+    Ok(())
+}
+
 pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, provider_id, user_id, created_at, updated_at
