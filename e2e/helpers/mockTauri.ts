@@ -214,6 +214,8 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
             let assistantContent = "";
             let thinkingContent = "";
             let useCustomResponse = false;
+            let toolUseDetected = false;
+            let toolName = "";
 
             const customResponses = state.customResponses ?? {};
             const keys = Object.keys(customResponses);
@@ -221,7 +223,7 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
               if (userContent.toLowerCase().includes(key.toLowerCase())) {
                 const custom = customResponses[key];
                 const resp = custom.response as {
-                  content?: Array<{ thinking?: string; text?: string; type: string }>;
+                  content?: Array<{ thinking?: string; text?: string; type: string; name?: string; input?: object }>;
                 };
                 if (resp.content) {
                   for (const block of resp.content) {
@@ -229,6 +231,9 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                       thinkingContent = block.thinking ?? "";
                     } else if (block.type === "text") {
                       assistantContent += block.text ?? "";
+                    } else if (block.type === "tool_use") {
+                      toolUseDetected = true;
+                      toolName = block.name ?? "unknown_tool";
                     }
                   }
                   useCustomResponse = true;
@@ -313,20 +318,50 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
               }, 5);
             }
 
-            window.setTimeout(() => {
-              emit("chat-done", {
-                conversation_id: conversationId,
-                message_id: assistantMessageId,
-                content: assistantContent,
-                hasThinking: !!thinkingContent,
+            // Handle tool_use detection - simulate immediate execution for tools like get_time
+            if (toolUseDetected) {
+              const toolResult = JSON.stringify({
+                iso: new Date().toISOString(),
+                human_readable: new Date().toLocaleString(),
+                unix_timestamp: Math.floor(Date.now() / 1000),
+                timezone: "UTC",
+                utc_offset: "+00"
               });
-              const nextState = loadState();
-              const messages = nextState.messagesByConversation[conversationId] ?? [];
-              nextState.messagesByConversation[conversationId] = messages.map((message) =>
-                message.id === assistantMessageId ? { ...message, content: assistantContent } : message
-              );
-              saveState(nextState);
-            }, 15);
+              
+              window.setTimeout(() => {
+                console.debug(
+                  "[mockTauri][tool-exec] EMIT tool=", toolName, "result=", toolResult
+                );
+                // Emit a chat-done event with the tool execution result
+                emit("chat-done", {
+                  conversation_id: conversationId,
+                  message_id: assistantMessageId,
+                  content: `Called tool ${toolName}()\nTool result: ${toolResult}`,
+                  hasThinking: !!thinkingContent,
+                });
+                const nextState = loadState();
+                const messages = nextState.messagesByConversation[conversationId] ?? [];
+                nextState.messagesByConversation[conversationId] = messages.map((message) =>
+                  message.id === assistantMessageId ? { ...message, content: `Called tool ${toolName}()\nTool result: ${toolResult}` } : message
+                );
+                saveState(nextState);
+              }, 20);
+            } else {
+              window.setTimeout(() => {
+                emit("chat-done", {
+                  conversation_id: conversationId,
+                  message_id: assistantMessageId,
+                  content: assistantContent,
+                  hasThinking: !!thinkingContent,
+                });
+                const nextState = loadState();
+                const messages = nextState.messagesByConversation[conversationId] ?? [];
+                nextState.messagesByConversation[conversationId] = messages.map((message) =>
+                  message.id === assistantMessageId ? { ...message, content: assistantContent } : message
+                );
+                saveState(nextState);
+              }, 15);
+            }
             return assistantMessageId;
           }
           case "approve_action": {

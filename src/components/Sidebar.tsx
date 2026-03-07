@@ -95,7 +95,6 @@ export default function Sidebar({
       </div>
       {!collapsed && (
       <nav className="conversation-list">
-        <p className="conversation-section-label">Today</p>
         {conversations.length === 0 ? (
           <p className="conversation-empty">No conversations yet.</p>
         ) : (
@@ -117,7 +116,6 @@ export default function Sidebar({
             </button>
           ))
         )}
-        <p className="conversation-footer">You have reached the end of your chat history.</p>
       </nav>
       )}
       {!collapsed && (
