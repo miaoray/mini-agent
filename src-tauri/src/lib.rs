@@ -16,6 +16,8 @@ use tauri::async_runtime;
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
+use crate::agent::ConversationTitleUpdatedEvent;
+
 pub mod test_support {
     use rusqlite::Connection;
 
@@ -228,22 +230,59 @@ async fn send_message(
 ) -> Result<String, String> {
     let assistant_message_id = assistant_message_id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let user_message_id = user_message_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let provider_runtime = {
+    let (provider_runtime, maybe_new_title) = {
         let conn = state.connection()?;
         let now = now_unix_ts();
+        
+        // Insert the user message
         conn.execute(
             "INSERT INTO message (id, conversation_id, role, content, created_at)
              VALUES (?1, ?2, 'user', ?3, ?4)",
             params![user_message_id, conversation_id.clone(), content, now],
         )
         .map_err(|e| e.to_string())?;
+        
+        // Check if this is the first message in the conversation
+        let message_count: i32 = conn.query_row(
+            "SELECT COUNT(*) FROM message WHERE conversation_id = ?1",
+            params![conversation_id],
+            |row| row.get(0),
+        ).map_err(|e| e.to_string())?;
+        
+        // Update conversation updated_at timestamp
         conn.execute(
             "UPDATE conversation SET updated_at = ?1 WHERE id = ?2",
             params![now, conversation_id.clone()],
         )
         .map_err(|e| e.to_string())?;
-        load_provider_runtime_for_conversation(&conn, &conversation_id)?
+        
+        let mut new_title: Option<String> = None;
+        
+        // If this is the first message, generate a title based on the content
+        if message_count == 1 {
+            let title = generate_title_from_content(&content);
+            conn.execute(
+                "UPDATE conversation SET title = ?1 WHERE id = ?2",
+                params![title, conversation_id.clone()],
+            ).map_err(|e| e.to_string())?;
+            
+            new_title = Some(title);
+        }
+        
+        (load_provider_runtime_for_conversation(&conn, &conversation_id)?, new_title)
     };
+    
+    // Emit an event to notify the frontend about the title change if we generated a new title
+    if let Some(title) = maybe_new_title {
+        if let Err(e) = app.emit("conversation-title-updated", 
+            ConversationTitleUpdatedEvent {
+                conversation_id: conversation_id.clone(),
+                title: title.clone(),
+            }) {
+            eprintln!("Failed to emit conversation-title-updated event: {}", e);
+        }
+    }
+    
     let app_handle = app.clone();
     let background_conversation_id = conversation_id.clone();
     let background_message_id = assistant_message_id.clone();
@@ -896,6 +935,114 @@ fn now_unix_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Generate a suitable conversation title from the first message content
+fn generate_title_from_content(content: &str) -> String {
+    // Trim whitespace and take the first sentence or up to 25 characters
+    let trimmed = content.trim();
+    
+    // If the content is empty, return default title
+    if trimmed.is_empty() {
+        return "New Chat".to_string();
+    }
+    
+    // Find the end of the first sentence (period, question mark, or exclamation mark)
+    if let Some(end_pos) = trimmed.find(|c| matches!(c, '.' | '?' | '!')) {
+        // Include the punctuation mark in the title
+        let end_pos_with_punct = end_pos + 1;
+        return trimmed[..end_pos_with_punct].to_string();
+    }
+    
+    // If no sentence ending is found, take up to 25 characters
+    let mut title = String::new();
+    let mut char_count = 0;
+    
+    for ch in trimmed.chars() {
+        if char_count >= 25 {
+            break;
+        }
+        title.push(ch);
+        char_count += 1;
+    }
+    
+    // If the title is shorter than the original content, add "..."
+    if trimmed.len() > title.len() {
+        // Try to find a word boundary to avoid cutting in the middle of a word
+        if title.len() == 25 {
+            if let Some(last_space) = title.rfind(' ') {
+                if last_space > 10 { // Only if we have a reasonable amount of text
+                    return format!("{}...", title[..last_space].trim_end());
+                }
+            }
+        }
+        return format!("{}...", title);
+    }
+    
+    title
+}
+
+#[cfg(test)]
+mod title_generation_tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_title_short_content() {
+        let content = "Hello, how are you?";
+        let title = generate_title_from_content(content);
+        assert_eq!(title, "Hello, how are you?");
+    }
+
+    #[test]
+    fn test_generate_title_long_content() {
+        let content = "This is a very long message that should be truncated to a reasonable length for the conversation title";
+        let title = generate_title_from_content(content);
+        assert!(title.len() <= 30); // Account for "..." suffix
+        assert!(title.ends_with("..."));
+    }
+
+    #[test]
+    fn test_generate_title_sentence_ending() {
+        let content = "What is the weather like today? I want to go outside.";
+        let title = generate_title_from_content(content);
+        assert_eq!(title, "What is the weather like today?");
+    }
+
+    #[test]
+    fn test_generate_title_with_exclamation() {
+        let content = "That's amazing! We should celebrate.";
+        let title = generate_title_from_content(content);
+        assert_eq!(title, "That's amazing!");
+    }
+
+    #[test]
+    fn test_generate_title_with_question_mark() {
+        let content = "Can you help me with this? It's important.";
+        let title = generate_title_from_content(content);
+        assert_eq!(title, "Can you help me with this?");
+    }
+
+    #[test]
+    fn test_generate_title_empty_content() {
+        let content = "";
+        let title = generate_title_from_content(content);
+        assert_eq!(title, "New Chat");
+    }
+
+    #[test]
+    fn test_generate_title_whitespace_only() {
+        let content = "   \n\t   ";
+        let title = generate_title_from_content(content);
+        assert_eq!(title, "New Chat");
+    }
+
+    #[test]
+    fn test_generate_title_truncate_at_word_boundary() {
+        let content = "This is a sentence that will be cut off at a word boundary approximately";
+        let title = generate_title_from_content(content);
+        // Should try to end at word boundary if possible
+        assert!(title.len() <= 30);
+    }
 }
 
 fn resolve_approval_base_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {

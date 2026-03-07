@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useConversationStore } from "./stores/conversationStore";
 import { hydrateConversationMessages } from "./lib/conversationHydrate";
 
@@ -173,6 +174,34 @@ export async function setupTauriListeners(): Promise<void> {
       return;
     }
     unlisteners.push(unlisten5);
+
+    const unlisten6 = await listen<{ conversation_id: string; title: string }>("conversation-title-updated", async (event) => {
+        const { conversation_id, title } = event.payload;
+        const store = useConversationStore.getState();
+        
+        // Reload the conversations list from the database to ensure consistency
+        try {
+          const conversations = await invoke<Array<{id: string; title: string}>>("list_conversations");
+          store.setConversations(conversations);
+        } catch (error) {
+          console.error("Failed to reload conversations after title update:", error);
+          // Fallback: update the conversation title in memory
+          const updatedConversations = store.conversations.map(conv => 
+            conv.id === conversation_id ? { ...conv, title } : conv
+          );
+          store.setConversations(updatedConversations);
+        }
+      });
+    if (myGen !== listenerGeneration) {
+      unlisten1();
+      unlisten2();
+      unlisten3();
+      unlisten4();
+      unlisten5();
+      unlisten6();
+      return;
+    }
+    unlisteners.push(unlisten6);
   } catch {
     // Ignore in non-Tauri environments (e.g. browser tests, e2e).
   }

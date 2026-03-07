@@ -36,12 +36,19 @@ pub fn create_conversation(conn: &Connection, provider_id: &str) -> Result<Conve
 }
 
 pub fn clear_all_conversations(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM tool_invocation", [])?;
-    conn.execute("DELETE FROM llm_debug_log", [])?;
-    conn.execute("DELETE FROM agent_turn", [])?;
-    conn.execute("DELETE FROM pending_approval", [])?;
-    conn.execute("DELETE FROM message", [])?;
-    conn.execute("DELETE FROM conversation", [])?;
+    // Use transaction to ensure atomicity
+    let tx = conn.unchecked_transaction()?;
+    
+    // Delete in reverse dependency order to avoid foreign key constraint errors:
+    // First delete from tables that reference other tables (bottom-up in dependency tree)
+    tx.execute("DELETE FROM tool_invocation", [])?;
+    tx.execute("DELETE FROM llm_debug_log", [])?;
+    tx.execute("DELETE FROM pending_approval", [])?;
+    tx.execute("DELETE FROM agent_turn", [])?;
+    tx.execute("DELETE FROM message", [])?;
+    tx.execute("DELETE FROM conversation", [])?;
+    
+    tx.commit()?;
     Ok(())
 }
 

@@ -45,6 +45,34 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
         return Math.floor(Date.now() / 1000);
       }
 
+      function generateTitleFromContent(content: string): string {
+        const trimmed = content.trim();
+        
+        if (trimmed.length === 0) {
+          return "New Chat";
+        }
+        
+        // Find the end of the first sentence
+        const sentenceEndMatch = trimmed.match(/[.?!]/);
+        if (sentenceEndMatch && sentenceEndMatch.index !== undefined) {
+          return trimmed.substring(0, sentenceEndMatch.index + 1);
+        }
+        
+        // If no sentence ending is found, take up to 25 characters
+        if (trimmed.length <= 25) {
+          return trimmed;
+        }
+        
+        // Try to find a word boundary
+        const truncated = trimmed.substring(0, 25);
+        const lastSpace = truncated.lastIndexOf(' ');
+        if (lastSpace > 10) {
+          return truncated.substring(0, lastSpace).trimEnd() + "...";
+        }
+        
+        return truncated + "...";
+      }
+
       function nextId(prefix: string): string {
         const id = `${prefix}-${Date.now()}-${idCounter}`;
         idCounter += 1;
@@ -210,6 +238,10 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
             const timestamp = nowTs();
             const userMessageId = providedUserMessageId || nextId("user");
             const assistantMessageId = providedAssistantMessageId || nextId("assistant");
+            
+            // Check if this is the first message in the conversation
+            const existingMessages = state.messagesByConversation[conversationId] ?? [];
+            const isFirstMessage = existingMessages.length === 0;
 
             let assistantContent = "";
             let thinkingContent = "";
@@ -263,11 +295,23 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                 created_at: timestamp + 1,
               },
             ];
-            state.conversations = state.conversations.map((conversation) =>
-              conversation.id === conversationId
-                ? { ...conversation, updated_at: timestamp + 1 }
-                : conversation
-            );
+            
+            // Generate title if this is the first message
+            let newTitle: string | null = null;
+            if (isFirstMessage) {
+              newTitle = generateTitleFromContent(userContent);
+              state.conversations = state.conversations.map((conversation) =>
+                conversation.id === conversationId
+                  ? { ...conversation, title: newTitle!, updated_at: timestamp + 1 }
+                  : conversation
+              );
+            } else {
+              state.conversations = state.conversations.map((conversation) =>
+                conversation.id === conversationId
+                  ? { ...conversation, updated_at: timestamp + 1 }
+                  : conversation
+              );
+            }
             saveState(state);
 
             if (userContent.toLowerCase().includes("write file")) {
@@ -314,6 +358,22 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
                   conversation_id: conversationId,
                   message_id: assistantMessageId,
                   thinking: thinkingContent,
+                });
+              }, 5);
+            }
+
+            // Emit title update event if this is the first message
+            if (newTitle) {
+              window.setTimeout(() => {
+                console.debug(
+                  "[mockTauri][conversation-title-updated] EMIT conversation_id=",
+                  conversationId,
+                  "title=",
+                  newTitle
+                );
+                emit("conversation-title-updated", {
+                  conversation_id: conversationId,
+                  title: newTitle,
                 });
               }, 5);
             }
@@ -434,6 +494,13 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
             return null;
           case "list_debug_logs":
             return [];
+          case "clear_all_conversations": {
+            const state = loadState();
+            state.conversations = [];
+            state.messagesByConversation = {};
+            saveState(state);
+            return null;
+          }
           default:
             throw new Error(`mock invoke not implemented for command: ${cmd}`);
         }

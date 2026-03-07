@@ -48,6 +48,9 @@ function App() {
       const valid =
         saved && list.some((c) => c.id === saved);
       setCurrentConversation(valid ? saved : list[0].id);
+    } else if (list.length === 0) {
+      // If there are no conversations, reset the current conversation
+      setCurrentConversation(null);
     }
   }
 
@@ -74,7 +77,7 @@ function App() {
 
   async function handleClearAllConversations() {
     await invoke("clear_all_conversations");
-    setConversations([]);
+    await refreshConversations(); // Refresh the conversation list after clearing
     useConversationStore.getState().clearMessages();
     localStorage.removeItem(LAST_CONV_KEY);
   }

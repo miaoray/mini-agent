@@ -51,3 +51,10 @@ pub struct PendingApprovalEvent {
     pub action_type: String,
     pub payload: serde_json::Value,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTitleUpdatedEvent {
+    pub conversation_id: String,
+    pub title: String,
+}
