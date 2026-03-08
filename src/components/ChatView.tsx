@@ -16,7 +16,7 @@ export default function ChatView() {
     messagesByConversation,
     pendingApprovals,
     approvalBusy,
-    streamingConversationId,
+    isStreaming,
     activeThinking,
     activeThinkingConversationId,
     error,
@@ -46,7 +46,7 @@ export default function ChatView() {
     : pendingApprovals;
   
   // Compute isStreaming for the current conversation only
-  const isStreaming = streamingConversationId === currentConversationId;
+  const isCurrentStreaming = isStreaming && currentConversationId !== null;
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -124,7 +124,7 @@ export default function ChatView() {
     
     const id = setInterval(() => {
       const state = useConversationStore.getState();
-      if (state.streamingConversationId !== currentConversationId && !state.activeThinking) return;
+      if (!state.isStreaming && !state.activeThinking) return;
       // Check again in case user scrolled during interval
       if (userScrolledRef.current) return;
       requestAnimationFrame(() => {
@@ -145,7 +145,7 @@ export default function ChatView() {
     if (!content) {
       return;
     }
-    if (isStreaming || isSubmitting) {
+    if (isCurrentStreaming || isSubmitting) {
       return;
     }
     setIsSubmitting(true);
@@ -189,7 +189,7 @@ export default function ChatView() {
         });
       }
 
-      setWaiting(conversationId, true);
+      setWaiting(true);
 
       await invoke<string>("send_message", {
         conversationId,
@@ -310,7 +310,7 @@ export default function ChatView() {
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" /></svg>
               </span>
             </div>
-            <button type="submit" className="chat-send-btn" disabled={streamingConversationId === currentConversationId || isSubmitting} aria-label="Send">
+            <button type="submit" className="chat-send-btn" disabled={isCurrentStreaming || isSubmitting} aria-label="Send">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>
             </button>
           </div>

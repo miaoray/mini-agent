@@ -181,7 +181,7 @@ export async function setupTauriListeners(): Promise<void> {
         
         // Reload the conversations list from the database to ensure consistency
         try {
-          const conversations = await invoke<Array<{id: string; title: string}>>("list_conversations");
+          const conversations = await invoke<any[]>("list_conversations");
           store.setConversations(conversations);
         } catch (error) {
           console.error("Failed to reload conversations after title update:", error);

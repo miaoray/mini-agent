@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useLocaleStore } from "../stores/localeStore";
 
 interface ConfirmDialogProps {
