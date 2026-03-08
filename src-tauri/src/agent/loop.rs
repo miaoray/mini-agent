@@ -1,3 +1,4 @@
+use chrono::{DateTime, Local};
 use rusqlite::Connection;
 
 use crate::agent::StoredMessage;
@@ -21,15 +22,37 @@ pub fn build_messages_for_llm(
         })
     })?;
 
-    // TODO(task-9): include tool invocation/tool result messages when tool_calls are wired in llm.
-    rows.map(|row| {
+    // Build user/assistant messages
+    let mut messages: Vec<ChatMessage> = rows.map(|row| {
         row.map(|message| ChatMessage {
             role: message.role,
             content: message.content,
             content_blocks: None,
         })
     })
-    .collect()
+    .collect::<Result<Vec<_>, _>>()?;
+
+    // Prepend a system message with current time information
+    let now: DateTime<Local> = Local::now();
+    let system_message = ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "Current date and time: {} ({}). \
+            Unix timestamp: {}. Timezone: {}. UTC offset: {:+05}. \
+            Use this information for any time-related queries.",
+            now.format("%Y-%m-%d %H:%M:%S"),
+            now.format("%A, %B %d, %Y"),
+            now.timestamp(),
+            now.format("%Z"),
+            now.offset().local_minus_utc() / 3600
+        ),
+        content_blocks: None,
+    };
+
+    messages.insert(0, system_message);
+
+    // TODO(task-9): include tool invocation/tool result messages when tool_calls are wired in llm.
+    Ok(messages)
 }
 
 #[cfg(test)]
@@ -78,7 +101,12 @@ mod tests {
         let roles: Vec<String> = llm_messages.iter().map(|m| m.role.clone()).collect();
         let contents: Vec<String> = llm_messages.iter().map(|m| m.content.clone()).collect();
 
-        assert_eq!(roles, vec!["user", "assistant", "user"]);
-        assert_eq!(contents, vec!["Hello", "Hi there", "Plan a trip"]);
+        // First message should be system message with current time
+        assert_eq!(roles[0], "system");
+        assert!(contents[0].contains("Current date and time:"));
+        
+        // Then user/assistant messages
+        assert_eq!(&roles[1..], vec!["user", "assistant", "user"]);
+        assert_eq!(&contents[1..], vec!["Hello", "Hi there", "Plan a trip"]);
     }
 }
