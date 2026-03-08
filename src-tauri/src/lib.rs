@@ -202,6 +202,16 @@ fn clear_all_conversations(state: tauri::State<'_, db::DbState>) -> Result<(), S
 }
 
 #[tauri::command]
+fn clear_other_conversations(
+    state: tauri::State<'_, db::DbState>,
+    current_conversation_id: String,
+) -> Result<(), String> {
+    let conn = state.connection()?;
+    db::conversation::clear_other_conversations(&conn, &current_conversation_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_messages(
     state: tauri::State<'_, db::DbState>,
     conversation_id: String,
@@ -1288,6 +1298,7 @@ pub fn run() {
             create_conversation,
             list_conversations,
             clear_all_conversations,
+            clear_other_conversations,
             list_messages,
             get_conversation,
             send_message,

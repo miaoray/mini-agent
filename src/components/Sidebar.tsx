@@ -1,6 +1,8 @@
+import { useState } from "react";
 import type { Conversation } from "../stores/conversationStore";
 import { useLocaleStore } from "../stores/localeStore";
 import DebugPanel from "./DebugPanel";
+import ConfirmDialog from "./ConfirmDialog";
 
 const IconTrash = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -56,9 +58,25 @@ export default function Sidebar({
   onToggleCollapse,
 }: SidebarProps) {
   const { locale, setLocale } = useLocaleStore();
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const toggleLocale = () => {
     setLocale(locale === "en" ? "zh" : "en");
+  };
+
+  const handleClearClick = () => {
+    setShowClearConfirm(true);
+  };
+
+  const handleConfirmClear = () => {
+    if (onClearAllConversations) {
+      onClearAllConversations();
+    }
+    setShowClearConfirm(false);
+  };
+
+  const handleCancelClear = () => {
+    setShowClearConfirm(false);
   };
 
   return (
@@ -71,9 +89,9 @@ export default function Sidebar({
               <button
                 type="button"
                 className="sidebar-icon-btn"
-                onClick={onClearAllConversations}
-                title="Clear all conversations"
-                aria-label="Clear all conversations"
+                onClick={handleClearClick}
+                title={locale === "zh" ? "删除历史会话" : "Delete conversation history"}
+                aria-label={locale === "zh" ? "删除历史会话" : "Delete conversation history"}
               >
                 <IconTrash />
               </button>
@@ -135,6 +153,21 @@ export default function Sidebar({
       </div>
       )}
       {!collapsed && <DebugPanel />}
+      {showClearConfirm && (
+        <ConfirmDialog
+          isOpen={showClearConfirm}
+          title={locale === "zh" ? "删除历史会话" : "Delete Conversation History"}
+          message={
+            locale === "zh"
+              ? `确定要删除所有 ${conversations.length} 个会话吗？此操作无法撤销。`
+              : `Are you sure you want to delete all ${conversations.length} conversations? This action cannot be undone.`
+          }
+          confirmText={locale === "zh" ? "确认删除" : "Delete"}
+          cancelText={locale === "zh" ? "取消" : "Cancel"}
+          onConfirm={handleConfirmClear}
+          onCancel={handleCancelClear}
+        />
+      )}
     </aside>
   );
 }

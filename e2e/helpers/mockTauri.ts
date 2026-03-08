@@ -501,6 +501,33 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
             saveState(state);
             return null;
           }
+          case "clear_other_conversations": {
+            const currentConversationId = String(args.currentConversationId ?? "");
+            const state = loadState();
+            
+            // Keep only the current conversation
+            if (currentConversationId) {
+              const currentConversation = state.conversations.find(conv => conv.id === currentConversationId);
+              if (currentConversation) {
+                state.conversations = [currentConversation];
+                
+                // Keep only messages for current conversation
+                const currentMessages = state.messagesByConversation[currentConversationId] || [];
+                state.messagesByConversation = {};
+                state.messagesByConversation[currentConversationId] = currentMessages;
+              } else {
+                // If current conversation doesn't exist, clear all
+                state.conversations = [];
+                state.messagesByConversation = {};
+              }
+            } else {
+              // If no current conversation specified, clear all
+              state.conversations = [];
+              state.messagesByConversation = {};
+            }
+            saveState(state);
+            return null;
+          }
           default:
             throw new Error(`mock invoke not implemented for command: ${cmd}`);
         }
