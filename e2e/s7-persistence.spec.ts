@@ -11,6 +11,6 @@ test("conversation persistence after reload", async ({ page }) => {
 
   await page.reload();
 
-  await expect(page.getByRole("navigation").getByRole("button", { name: "New Chat" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New chat" })).toBeVisible();
   await expect(page.getByText("Mock assistant reply: persist this message")).toBeVisible();
 });

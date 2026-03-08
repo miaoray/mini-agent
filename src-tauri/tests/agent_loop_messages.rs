@@ -58,9 +58,15 @@ fn build_messages_for_llm_reads_sqlite_rows_in_created_at_order() {
         .map(|m| (m.role.as_str(), m.content.as_str()))
         .collect();
 
+    // First message should be system message with time info
+    assert_eq!(role_content_pairs.len(), 4);
+    assert_eq!(role_content_pairs[0].0, "system");
+    assert!(role_content_pairs[0].1.contains("Current date and time:"));
+    
+    // Then user/assistant messages in created_at order
     assert_eq!(
-        role_content_pairs,
-        vec![
+        role_content_pairs[1..],
+        [
             ("user", "First"),
             ("assistant", "Second"),
             ("user", "Third"),
