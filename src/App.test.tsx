@@ -290,7 +290,7 @@ test("disables submit and blocks send while streaming", async () => {
 
   useConversationStore.setState({
     currentConversationId: "conv-stream",
-    isStreaming: true,
+    streamingConversationId: "conv-stream",
   });
 
   render(<App />);
