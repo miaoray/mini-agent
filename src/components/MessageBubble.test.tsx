@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import MessageBubble from "./MessageBubble";
 
 describe("MessageBubble", () => {
@@ -48,5 +48,16 @@ describe("MessageBubble", () => {
       />
     );
     expect(screen.getByText("**not bold**")).toBeInTheDocument();
+  });
+
+  test("renders markdown links with proper attributes", () => {
+    const linkMarkdown = 'Check [this link](https://example.com)';
+    render(
+      <MessageBubble role="assistant" content={linkMarkdown} variant="final" />
+    );
+    const link = screen.getByRole('link', { name: 'this link' });
+    expect(link).toHaveAttribute('href', 'https://example.com');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
 });

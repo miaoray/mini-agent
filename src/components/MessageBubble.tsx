@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 type MessageBubbleProps = {
   role: "user" | "assistant";
@@ -10,6 +11,26 @@ type MessageBubbleProps = {
 
 const useMarkdown = (role: "user" | "assistant", variant: "tool-process" | "final") =>
   role === "assistant" && variant === "final";
+
+// Custom link component that opens in system browser
+const CustomLink = ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+  const handleClick = async (e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    if (href) {
+      try {
+        await openUrl(href);
+      } catch (error) {
+        console.error('Failed to open URL:', error);
+      }
+    }
+  };
+
+  return (
+    <a href={href} onClick={handleClick} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
+};
 
 export default function MessageBubble({
   role,
@@ -35,7 +56,14 @@ export default function MessageBubble({
       {showContent ? (
         renderMarkdown ? (
           <div className="message-content markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ href, children }) => <CustomLink href={href}>{children}</CustomLink>
+              }}
+            >
+              {content}
+            </ReactMarkdown>
           </div>
         ) : (
           <p className="message-content">{content}</p>
