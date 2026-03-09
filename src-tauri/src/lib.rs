@@ -1,6 +1,7 @@
 mod agent;
 mod approval;
 mod commands;
+mod constants;
 mod db;
 pub mod llm;
 pub mod tools;
@@ -13,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 use tauri::async_runtime;
+use tauri::menu::{MenuBuilder, SubmenuBuilder, MenuItemBuilder};
 use tauri::{Emitter, Manager};
 use uuid::Uuid;
 
@@ -1283,6 +1285,19 @@ pub fn run() {
     dotenvy::dotenv().ok();
     tauri::Builder::default()
         .setup(|app| {
+            // Create custom app menu - first submenu becomes "About" on macOS
+            let about_submenu = SubmenuBuilder::new(app, "About")
+                .item(&MenuItemBuilder::with_id("about", &format!("About {}", constants::APP_NAME)).build(app)?)
+                .separator()
+                .item(&MenuItemBuilder::with_id("quit", &format!("Quit {}", constants::APP_NAME)).build(app)?)
+                .build()?;
+
+            let menu = MenuBuilder::new(app)
+                .item(&about_submenu)
+                .build()?;
+
+            app.set_menu(menu)?;
+
             let db_state = db::init_db(app.handle())?;
             let mut tool_registry = tools::ToolRegistry::new();
             tools::register_default_tools(&mut tool_registry).map_err(std::io::Error::other)?;
