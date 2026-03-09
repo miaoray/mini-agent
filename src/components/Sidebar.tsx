@@ -82,7 +82,7 @@ export default function Sidebar({
   return (
     <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""}`}>
       <div className="sidebar-header">
-        <h1 className="sidebar-title">Mini-Agent</h1>
+        <h1 className="sidebar-title">Mini Agent</h1>
         <div className="sidebar-actions">
           {!collapsed && (
             <>
@@ -152,7 +152,7 @@ export default function Sidebar({
         <span className="sidebar-user-caret">▾</span>
       </div>
       )}
-      {!collapsed && <DebugPanel />}
+      {!collapsed && import.meta.env.VITE_SHOW_DEBUG === "true" && <DebugPanel />}
       {showClearConfirm && (
         <ConfirmDialog
           isOpen={showClearConfirm}

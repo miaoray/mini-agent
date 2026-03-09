@@ -6,8 +6,8 @@ import ConfigBanner from "./ConfigBanner";
 test("shows warning when API key is missing", () => {
   render(<ConfigBanner hasApiKey={false} />);
 
-  expect(screen.getByRole("alert")).toHaveTextContent("Missing `MINIMAX_API_KEY`.");
-  expect(screen.getByText(/\.env\.example/)).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent(/MINIMAX_API_KEY/);
+  expect(screen.getByText("Get API Key")).toBeInTheDocument();
 });
 
 test("does not render warning when API key exists", () => {

@@ -16,18 +16,15 @@ test("chat events flow - delta and done events", async ({ page }) => {
 });
 
 /**
- * Test debug panel toggle
+ * Test debug panel is hidden by default
  */
-test("debug panel can be toggled", async ({ page }) => {
+test("debug panel is hidden by default", async ({ page }) => {
   await installMockTauri(page, { hasApiKey: true });
   await page.goto("/");
 
+  // Debug panel is hidden by default, only shown when VITE_SHOW_DEBUG=true
   const debugToggle = page.getByLabel("Debug Mode");
-  await expect(debugToggle).toBeVisible();
-  await expect(debugToggle).not.toBeChecked();
-
-  await debugToggle.check();
-  await expect(debugToggle).toBeChecked();
+  await expect(debugToggle).not.toBeVisible();
 });
 
 /**

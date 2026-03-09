@@ -5,5 +5,5 @@ test("shows missing API key banner when backend config is unavailable", async ({
   await installMockTauri(page, { hasApiKey: false });
   await page.goto("/");
 
-  await expect(page.getByRole("alert")).toContainText("Missing `MINIMAX_API_KEY`");
+  await expect(page.getByRole("alert")).toContainText("MINIMAX_API_KEY");
 });

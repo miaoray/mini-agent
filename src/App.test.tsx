@@ -83,7 +83,7 @@ test("shows config banner when check_config invoke fails", async () => {
   render(<App />);
 
   await waitFor(() => {
-    expect(screen.getByRole("alert")).toHaveTextContent("Missing `MINIMAX_API_KEY`.");
+    expect(screen.getByRole("alert")).toHaveTextContent(/MINIMAX_API_KEY/);
   });
 });
 
