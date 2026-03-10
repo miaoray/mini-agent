@@ -8,7 +8,7 @@ pub struct ConfigCheckResponse {
 
 #[tauri::command]
 pub fn check_config() -> ConfigCheckResponse {
-    let has_api_key = std::env::var("MINIMAX_API_KEY")
+    let has_api_key = std::env::var("DEEPSEEK_API_KEY")
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
 

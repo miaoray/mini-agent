@@ -81,6 +81,15 @@ pub enum ChatCompletionOutput {
     ToolCalls(Vec<ToolCall>),
 }
 
+impl ChatCompletionOutput {
+    pub fn as_content(&self) -> Option<&str> {
+        match self {
+            ChatCompletionOutput::Content(s) => Some(s),
+            ChatCompletionOutput::ToolCalls(_) => None,
+        }
+    }
+}
+
 /// Result of chat_completion_with_tools including optional thinking for display.
 #[derive(Debug, Clone)]
 pub struct ChatCompletionResult {
@@ -192,6 +201,9 @@ impl MiniMaxClient {
             .and_then(|choice| choice.message)
             .ok_or(MiniMaxError::MissingResponseContent)?;
 
+        // Extract thinking/reasoning content (for DeepSeek, etc.)
+        let thinking = message.reasoning_content.filter(|r| !r.is_empty());
+
         if let Some(tool_calls) = message.tool_calls {
             if !tool_calls.is_empty() {
                 return Ok(ChatCompletionResult {
@@ -215,7 +227,7 @@ impl MiniMaxClient {
                             })
                             .collect::<Result<Vec<_>, MiniMaxError>>()?,
                     ),
-                    thinking: None,
+                    thinking,
                     raw_content_blocks: None,
                     raw_request: Some(raw_request),
                     raw_response: Some(body),
@@ -228,7 +240,7 @@ impl MiniMaxClient {
             .filter(|content| !content.is_empty())
             .map(|c| ChatCompletionResult {
                 output: ChatCompletionOutput::Content(c),
-                thinking: None,
+                thinking,
                 raw_content_blocks: None,
                 raw_request: Some(raw_request),
                 raw_response: Some(body),
@@ -276,6 +288,49 @@ impl MiniMaxClient {
         }
 
         let response = self.send_chat_completion_request(model, messages, true).await?;
+        let streamed = self
+            .collect_stream_with_callback(response, |delta| {
+                on_delta(delta).map_err(MiniMaxError::Callback)
+            })
+            .await?;
+        Ok(streamed.collected_text)
+    }
+
+    /// Streaming chat completion with tools support.
+    pub async fn chat_completion_stream_with_callback_and_tools<F>(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        tools: &[serde_json::Value],
+        mut on_delta: F,
+    ) -> Result<String, MiniMaxError>
+    where
+        F: FnMut(&str) -> Result<(), String>,
+    {
+        let mode = detect_provider_mode(&self.base_url);
+
+        // For Anthropic-compatible providers, use non-streaming
+        if mode == ProviderMode::AnthropicCompatible {
+            let result = self
+                .chat_completion_with_tools(model, messages, tools)
+                .await?;
+            if let ChatCompletionOutput::Content(ref content) = result.output {
+                if !content.is_empty() {
+                    on_delta(content).map_err(MiniMaxError::Callback)?;
+                }
+            }
+            return Ok(result
+                .output
+                .as_content()
+                .unwrap_or_default()
+                .to_string());
+        }
+
+        // For OpenAI-compatible providers, use streaming
+        let (_raw_request, response) = self
+            .send_chat_completion_request_with_tools_raw(model, messages, tools, true)
+            .await?;
+
         let streamed = self
             .collect_stream_with_callback(response, |delta| {
                 on_delta(delta).map_err(MiniMaxError::Callback)
@@ -817,31 +872,33 @@ struct AnthropicMessagesRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiChatResponse {
-    choices: Vec<OpenAiChoice>,
+pub struct OpenAiChatResponse {
+    pub choices: Vec<OpenAiChoice>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiChoice {
-    message: Option<OpenAiMessage>,
+pub struct OpenAiChoice {
+    pub message: Option<OpenAiMessage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiMessage {
-    content: Option<String>,
-    tool_calls: Option<Vec<OpenAiToolCall>>,
+pub struct OpenAiMessage {
+    pub content: Option<String>,
+    pub tool_calls: Option<Vec<OpenAiToolCall>>,
+    #[serde(rename = "reasoning_content")]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiToolCall {
-    id: Option<String>,
-    function: OpenAiToolCallFunction,
+pub struct OpenAiToolCall {
+    pub id: Option<String>,
+    pub function: OpenAiToolCallFunction,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenAiToolCallFunction {
-    name: Option<String>,
-    arguments: Option<String>,
+pub struct OpenAiToolCallFunction {
+    pub name: Option<String>,
+    pub arguments: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -182,9 +182,8 @@ fn greet(name: &str) -> String {
 #[tauri::command]
 fn create_conversation(state: tauri::State<'_, db::DbState>) -> Result<String, String> {
     let conn = state.connection()?;
-    let provider_id = select_provider_id(&conn)?;
     let conversation =
-        db::conversation::create_conversation(&conn, &provider_id).map_err(|e| e.to_string())?;
+        db::conversation::create_conversation(&conn).map_err(|e| e.to_string())?;
 
     Ok(conversation.id)
 }
@@ -463,8 +462,12 @@ async fn run_agent_turn(
         )
         .map_err(|e| e.to_string())?;
     }
-    let api_key = env::var("MINIMAX_API_KEY")
-        .map_err(|_| "missing required environment variable: MINIMAX_API_KEY".to_string())?;
+    let api_key = match provider_runtime.provider_id.as_str() {
+        "deepseek" => env::var("DEEPSEEK_API_KEY")
+            .map_err(|_| "missing required environment variable: DEEPSEEK_API_KEY".to_string())?,
+        _ => env::var("MINIMAX_API_KEY")
+            .map_err(|_| "missing required environment variable: MINIMAX_API_KEY".to_string())?,
+    };
     let client = llm::minimax::MiniMaxClient::new(api_key, provider_runtime.base_url.clone());
     let tool_defs = {
         let tool_registry_state = app_handle.state::<ToolRegistryState>();
@@ -535,6 +538,32 @@ async fn run_agent_turn(
             }
         }
 
+        // Use streaming for content deltas
+        let app_handle = app_handle.clone();
+        let conversation_id_clone = conversation_id.clone();
+        let assistant_message_id_clone = assistant_message_id.clone();
+
+        let _stream_result = client
+            .chat_completion_stream_with_callback_and_tools(
+                &provider_runtime.model_id,
+                &llm_messages,
+                &tool_defs,
+                |delta| {
+                    // Emit delta event for streaming content
+                    let _ = app_handle.emit(
+                        "chat-delta",
+                        agent::ChatDeltaEvent {
+                            conversation_id: conversation_id_clone.clone(),
+                            message_id: assistant_message_id_clone.clone(),
+                            content: delta.to_string(),
+                        },
+                    );
+                    Ok(())
+                },
+            )
+            .await;
+
+        // Now get the full result with thinking and tool calls
         let result = match client
             .chat_completion_with_tools(&provider_runtime.model_id, &llm_messages, &tool_defs)
             .await
@@ -892,29 +921,30 @@ fn select_provider_id(conn: &Connection) -> Result<String, String> {
 
 fn load_provider_runtime_for_conversation(
     conn: &Connection,
-    conversation_id: &str,
+    _conversation_id: &str,
 ) -> Result<agent::ProviderRuntime, String> {
-    conn.query_row(
-        "SELECT p.id, p.base_url, p.model_id
-         FROM conversation c
-         JOIN provider p ON p.id = c.provider_id
-         WHERE c.id = ?1",
-        [conversation_id],
-        |row| {
-            Ok(agent::ProviderRuntime {
-                provider_id: row.get(0)?,
-                base_url: row.get(1)?,
-                model_id: row.get(2)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| e.to_string())?
-    .map(|mut runtime| {
-        runtime.model_id = resolve_runtime_model_id(&runtime.base_url, &runtime.model_id);
-        runtime
-    })
-    .ok_or_else(|| format!("conversation not found or provider missing: {conversation_id}"))
+    // Try to get default provider from app_settings, fall back to constant
+    let default_id: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'default_provider_id'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    let provider_id = default_id.unwrap_or_else(|| db::provider::DEFAULT_PROVIDER_ID.to_string());
+
+    let provider = db::provider::get_provider_by_id(conn, &provider_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("provider {} not found", provider_id))?;
+
+    let mut runtime = agent::ProviderRuntime {
+        provider_id: provider.id,
+        base_url: provider.base_url,
+        model_id: provider.model_id,
+    };
+    runtime.model_id = resolve_runtime_model_id(&runtime.base_url, &runtime.model_id);
+    Ok(runtime)
 }
 
 fn resolve_runtime_model_id(base_url: &str, stored_model_id: &str) -> String {
@@ -1118,12 +1148,12 @@ mod tests {
         conn.execute(
             "INSERT INTO provider (id, name, type, base_url, model_id, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params!["minimax", "MiniMax", "openai", "http://example", "m", 2_i64],
+            rusqlite::params!["deepseek", "DeepSeek", "openai", "http://example", "m", 2_i64],
         )
-        .expect("insert minimax provider should succeed");
+        .expect("insert deepseek provider should succeed");
 
         let selected = super::select_provider_id(&conn).expect("provider selection should succeed");
-        assert_eq!(selected, "minimax");
+        assert_eq!(selected, "deepseek");
     }
 
     #[test]
@@ -1221,9 +1251,9 @@ mod tests {
             .expect("schema should execute successfully");
         crate::db::provider::insert_default_provider(&conn).expect("provider insert should succeed");
         conn.execute(
-            "INSERT INTO conversation (id, title, provider_id, user_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-            rusqlite::params!["conv-1", "New Chat", "minimax", 1_i64, 1_i64],
+            "INSERT INTO conversation (id, title, user_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, ?3, ?4)",
+            rusqlite::params!["conv-1", "New Chat", 1_i64, 1_i64],
         )
         .expect("conversation insert should succeed");
 
@@ -1280,7 +1310,10 @@ mod tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load .env first, then .env.deepseek to allow overrides
     dotenvy::dotenv().ok();
+    // Try to load .env.deepseek if it exists
+    let _ = dotenvy::from_filename(".env.deepseek").ok();
     tauri::Builder::default()
         .setup(|app| {
             let db_state = db::init_db(app.handle())?;
@@ -1307,7 +1340,10 @@ pub fn run() {
             get_debug_mode,
             set_debug_mode,
             list_debug_logs,
-            commands::check_config::check_config
+            commands::check_config::check_config,
+            commands::list_providers::list_providers,
+            commands::list_providers::get_default_provider,
+            commands::list_providers::set_default_provider,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

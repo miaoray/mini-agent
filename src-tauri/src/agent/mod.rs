@@ -25,6 +25,15 @@ pub struct ChatThinkingEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChatDeltaEvent {
+    pub conversation_id: String,
+    pub message_id: String,
+    /// Delta content to append to the message
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChatDoneEvent {
     pub conversation_id: String,
     pub message_id: String,

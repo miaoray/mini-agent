@@ -142,7 +142,7 @@ mod tests {
         let pending_status = column_info(&connection, "pending_approval", "status");
         assert_eq!(pending_status.default_value.as_deref(), Some("'pending'"));
 
-        assert_eq!(fk_count(&connection, "conversation"), 1);
+        assert_eq!(fk_count(&connection, "conversation"), 0);
         assert_eq!(fk_count(&connection, "message"), 1);
         assert_eq!(fk_count(&connection, "agent_turn"), 2);
         assert_eq!(fk_count(&connection, "tool_invocation"), 2);

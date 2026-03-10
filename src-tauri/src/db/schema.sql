@@ -12,11 +12,9 @@ CREATE TABLE IF NOT EXISTS provider (
 CREATE TABLE IF NOT EXISTS conversation (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT 'New Chat',
-    provider_id TEXT NOT NULL,
     user_id TEXT,
     created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    FOREIGN KEY (provider_id) REFERENCES provider(id)
+    updated_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS message (

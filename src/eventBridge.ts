@@ -79,6 +79,23 @@ export async function setupTauriListeners(): Promise<void> {
     }
     unlisteners.push(unlisten1);
 
+    // Handle streaming content deltas
+    const unlistenDelta = await listen<TurnEventPayload & { content?: string }>("chat-delta", (event) => {
+        const payload = event.payload;
+        const convId = payloadConversationId(payload);
+        const msgId = payloadMessageId(payload);
+        const content = payload?.content ?? "";
+        const store = useConversationStore.getState();
+        // Append delta content to the message
+        store.appendDelta(convId, msgId, content);
+    });
+    if (myGen !== listenerGeneration) {
+      unlisten1();
+      unlistenDelta();
+      return;
+    }
+    unlisteners.push(unlistenDelta);
+
     const unlisten2 = await listen<TurnEventPayload & { content?: string; hasThinking?: boolean }>("chat-done", (event) => {
         const payload = event.payload;
         const nextConversationId = payloadConversationId(payload);

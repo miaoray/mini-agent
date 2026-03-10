@@ -8,27 +8,25 @@ use uuid::Uuid;
 pub struct Conversation {
     pub id: String,
     pub title: String,
-    pub provider_id: String,
     pub user_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-pub fn create_conversation(conn: &Connection, provider_id: &str) -> Result<Conversation> {
+pub fn create_conversation(conn: &Connection) -> Result<Conversation> {
     let id = Uuid::new_v4().to_string();
     let now = now_unix_ts();
     let title = "New Chat";
 
     conn.execute(
-        "INSERT INTO conversation (id, title, provider_id, user_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-        params![id, title, provider_id, now, now],
+        "INSERT INTO conversation (id, title, user_id, created_at, updated_at)
+         VALUES (?1, ?2, NULL, ?3, ?4)",
+        params![id, title, now, now],
     )?;
 
     Ok(Conversation {
         id,
         title: title.to_string(),
-        provider_id: provider_id.to_string(),
         user_id: None,
         created_at: now,
         updated_at: now,
@@ -110,7 +108,7 @@ pub fn clear_other_conversations(conn: &Connection, keep_conversation_id: &str) 
 
 pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, provider_id, user_id, created_at, updated_at
+        "SELECT id, title, user_id, created_at, updated_at
          FROM conversation
          ORDER BY updated_at DESC, created_at DESC",
     )?;
@@ -118,10 +116,9 @@ pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
         Ok(Conversation {
             id: row.get(0)?,
             title: row.get(1)?,
-            provider_id: row.get(2)?,
-            user_id: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+            user_id: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
         })
     })?;
 
@@ -130,7 +127,7 @@ pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
 
 pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
     conn.query_row(
-        "SELECT id, title, provider_id, user_id, created_at, updated_at
+        "SELECT id, title, user_id, created_at, updated_at
          FROM conversation
          WHERE id = ?1",
         [id],
@@ -138,10 +135,9 @@ pub fn get_conversation(conn: &Connection, id: &str) -> Result<Conversation> {
             Ok(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
-                provider_id: row.get(2)?,
-                user_id: row.get(3)?,
-                created_at: row.get(4)?,
-                updated_at: row.get(5)?,
+                user_id: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
             })
         },
     )
@@ -184,7 +180,7 @@ mod tests {
     fn create_and_list_conversations() {
         let conn = test_conn();
 
-        let created = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let created = super::create_conversation(&conn)
             .expect("create conversation should succeed");
         let list = super::list_conversations(&conn).expect("list conversations should succeed");
 
@@ -196,13 +192,12 @@ mod tests {
     fn get_conversation_returns_saved_row() {
         let conn = test_conn();
 
-        let created = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let created = super::create_conversation(&conn)
             .expect("create conversation should succeed");
         let loaded = super::get_conversation(&conn, &created.id)
             .expect("get conversation should succeed");
 
         assert_eq!(loaded.id, created.id);
-        assert_eq!(loaded.provider_id, created.provider_id);
         assert_eq!(loaded.title, "New Chat");
     }
 
@@ -210,7 +205,7 @@ mod tests {
     fn update_conversation_title_persists_changes() {
         let conn = test_conn();
 
-        let created = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let created = super::create_conversation(&conn)
             .expect("create conversation should succeed");
         super::update_conversation_title(&conn, &created.id, "Renamed Chat")
             .expect("update title should succeed");
@@ -234,11 +229,11 @@ mod tests {
         let conn = test_conn();
     
         // Create multiple conversations
-        let conv1 = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let conv1 = super::create_conversation(&conn)
             .expect("create conversation 1 should succeed");
-        let conv2 = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let conv2 = super::create_conversation(&conn)
             .expect("create conversation 2 should succeed");
-        let conv3 = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let conv3 = super::create_conversation(&conn)
             .expect("create conversation 3 should succeed");
     
         // Add messages to each conversation
@@ -280,9 +275,9 @@ mod tests {
         let conn = test_conn();
     
         // Create multiple conversations
-        let _conv1 = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let _conv1 = super::create_conversation(&conn)
             .expect("create conversation 1 should succeed");
-        let _conv2 = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let _conv2 = super::create_conversation(&conn)
             .expect("create conversation 2 should succeed");    
         // Try to clear all except a non-existent conversation ID
         super::clear_other_conversations(&conn, "non-existent-id")
@@ -299,7 +294,7 @@ mod tests {
         let conn = test_conn();
     
         // Create one conversation
-        let conv1 = super::create_conversation(&conn, super::super::provider::DEFAULT_PROVIDER_ID)
+        let conv1 = super::create_conversation(&conn)
             .expect("create conversation should succeed");
     
         // Clear all except this one

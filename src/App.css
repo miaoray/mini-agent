@@ -320,11 +320,12 @@ html, body, #root {
 
 .chat-input-row {
   flex-shrink: 0;
-  padding-top: 16px;
+  padding: 16px 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  box-sizing: border-box;
 }
 
 .thinking-panel {
@@ -660,7 +661,6 @@ html, body, #root {
   flex-direction: column;
   gap: 0;
   padding: 12px 16px;
-  min-height: 120px;
   border: 1px solid #e8e8e8;
   border-radius: 16px;
   background: #ffffff;
@@ -708,9 +708,11 @@ html, body, #root {
 }
 
 .chat-input-field {
-  flex: 1;
   width: 100%;
-  min-height: 72px;
+  height: 48px;
+  min-height: 48px;
+  max-height: 192px;
+  overflow-y: auto;
   border: none;
   background: transparent;
   font-size: 16px;
@@ -718,6 +720,7 @@ html, body, #root {
   padding: 0;
   resize: none;
   font-family: inherit;
+  box-sizing: border-box;
 }
 
 .chat-input-field::placeholder {
@@ -752,6 +755,155 @@ html, body, #root {
 .chat-send-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Provider Selector */
+.provider-selector {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.provider-selector-loading {
+  opacity: 0.5;
+}
+
+.provider-selector-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  background: #f5f5f5;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+  transition: background-color 0.15s;
+}
+
+.provider-selector-trigger:hover {
+  background: #e8e8e8;
+}
+
+.provider-selector-name {
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-selector-arrow {
+  flex-shrink: 0;
+  transition: transform 0.2s;
+}
+
+.provider-selector-arrow-open {
+  transform: rotate(180deg);
+}
+
+.provider-dropdown {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  min-width: 180px;
+  background: #fff;
+  border: 1px solid #e8e8e8;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  z-index: 100;
+  animation: provider-dropdown-enter 0.15s ease-out;
+}
+
+@keyframes provider-dropdown-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.provider-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.1s;
+}
+
+.provider-dropdown-item:hover {
+  background: #f5f5f5;
+}
+
+.provider-dropdown-item:first-child {
+  border-radius: 12px 12px 0 0;
+}
+
+.provider-dropdown-item:last-child {
+  border-radius: 0 0 12px 12px;
+}
+
+.provider-dropdown-item-active {
+  background: #f0f0f0;
+}
+
+.provider-dropdown-item-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1a1a1a;
+}
+
+.provider-dropdown-item-model {
+  font-size: 12px;
+  color: #888;
+}
+
+.provider-dropdown-check {
+  margin-left: auto;
+  color: #22c55e;
+  font-size: 14px;
+}
+
+/* Dark mode support for provider selector */
+[data-theme="dark"] .provider-selector-trigger {
+  background: #2a2a2a;
+  color: #e5e5e5;
+}
+
+[data-theme="dark"] .provider-selector-trigger:hover {
+  background: #3a3a3a;
+}
+
+[data-theme="dark"] .provider-dropdown {
+  background: #1a1a1a;
+  border-color: #333;
+}
+
+[data-theme="dark"] .provider-dropdown-item:hover {
+  background: #252525;
+}
+
+[data-theme="dark"] .provider-dropdown-item-active {
+  background: #2a2a2a;
+}
+
+[data-theme="dark"] .provider-dropdown-item-name {
+  color: #e5e5e5;
+}
+
+[data-theme="dark"] .provider-dropdown-item-model {
+  color: #888;
 }
 
 .chat-error {

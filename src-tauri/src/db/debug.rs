@@ -224,8 +224,8 @@ mod tests {
         let conn = setup_test_db();
 
         conn.execute(
-            "INSERT INTO conversation (id, title, provider_id, created_at, updated_at)
-             VALUES ('conv-1', 'Test', 'minimax', 1, 1)",
+            "INSERT INTO conversation (id, title, created_at, updated_at)
+             VALUES ('conv-1', 'Test', 1, 1)",
             [],
         )
         .expect("conversation insert should succeed");

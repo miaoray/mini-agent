@@ -82,7 +82,7 @@ export default function Sidebar({
   return (
     <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""}`}>
       <div className="sidebar-header">
-        <h1 className="sidebar-title">Mini Agent</h1>
+        <h1 className="sidebar-title">MiniAgent</h1>
         <div className="sidebar-actions">
           {!collapsed && (
             <>

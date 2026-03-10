@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import ApprovalCard from "./ApprovalCard";
 import MessageList from "./MessageList";
+import ProviderSelector from "./ProviderSelector";
 import { useConversationStore, type Conversation } from "../stores/conversationStore";
 import { hydrateConversationMessages } from "../lib/conversationHydrate";
 import { useLocaleStore } from "../stores/localeStore";
@@ -199,6 +200,9 @@ export default function ChatView() {
       });
 
       setInput("");
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+      }
     } catch (caughtError: unknown) {
       const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
       setError(`Error: ${message}`);
@@ -275,7 +279,13 @@ export default function ChatView() {
             ref={inputRef}
             className="chat-input-field"
             value={input}
-            onChange={(event) => setInput(event.currentTarget.value)}
+            onChange={(event) => {
+              setInput(event.currentTarget.value);
+              // Auto-resize textarea: min 48px (2 rows), max 192px (8 rows)
+              const textarea = event.currentTarget;
+              textarea.style.height = "auto";
+              textarea.style.height = Math.min(textarea.scrollHeight, 192) + "px";
+            }}
             onCompositionStart={() => {
               composingEndRef.current = false;
             }}
@@ -296,7 +306,7 @@ export default function ChatView() {
               }
             }}
             placeholder="Send a message..."
-            rows={3}
+            rows={2}
           />
           <div className="chat-input-bar">
             <div className="chat-input-left-icons" aria-hidden="true">
@@ -309,6 +319,7 @@ export default function ChatView() {
               <span className="chat-input-icon" title="Pointer">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z" /></svg>
               </span>
+              <ProviderSelector />
             </div>
             <button type="submit" className="chat-send-btn" disabled={isCurrentStreaming || isSubmitting} aria-label="Send">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" /></svg>

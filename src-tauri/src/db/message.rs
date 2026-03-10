@@ -46,15 +46,15 @@ mod tests {
         )
         .expect("provider insert should succeed");
         conn.execute(
-            "INSERT INTO conversation (id, title, provider_id, user_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-            params!["conv-1", "New Chat", "minimax", 1_i64, 1_i64],
+            "INSERT INTO conversation (id, title, user_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, ?3, ?4)",
+            params!["conv-1", "New Chat", 1_i64, 1_i64],
         )
         .expect("conversation insert should succeed");
         conn.execute(
-            "INSERT INTO conversation (id, title, provider_id, user_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-            params!["conv-2", "New Chat", "minimax", 1_i64, 1_i64],
+            "INSERT INTO conversation (id, title, user_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, ?3, ?4)",
+            params!["conv-2", "New Chat", 1_i64, 1_i64],
         )
         .expect("second conversation insert should succeed");
 
@@ -98,9 +98,9 @@ mod tests {
         )
         .expect("provider insert should succeed");
         conn.execute(
-            "INSERT INTO conversation (id, title, provider_id, user_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
-            params!["conv-1", "New Chat", "minimax", 1_i64, 1_i64],
+            "INSERT INTO conversation (id, title, user_id, created_at, updated_at)
+             VALUES (?1, ?2, NULL, ?3, ?4)",
+            params!["conv-1", "New Chat", 1_i64, 1_i64],
         )
         .expect("conversation insert should succeed");
 
