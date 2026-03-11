@@ -169,7 +169,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM provider", [], |row| row.get(0))
             .expect("provider count query should succeed");
-        assert_eq!(count, 1);
+        assert_eq!(count, 4);
 
         let provider = super::get_provider_by_id(&conn, super::DEFAULT_PROVIDER_ID)
             .expect("provider query should succeed")
@@ -177,7 +177,7 @@ mod tests {
         assert_eq!(provider.name, "DeepSeek");
 
         let providers = super::list_providers(&conn).expect("list providers should succeed");
-        assert_eq!(providers.len(), 1);
+        assert_eq!(providers.len(), 4);
     }
 
     #[test]

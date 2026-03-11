@@ -152,7 +152,7 @@ export default function Sidebar({
         <span className="sidebar-user-caret">▾</span>
       </div>
       )}
-      {!collapsed && import.meta.env.VITE_SHOW_DEBUG === "true" && <DebugPanel />}
+      {!collapsed && false && <DebugPanel />}
       {showClearConfirm && (
         <ConfirmDialog
           isOpen={showClearConfirm}

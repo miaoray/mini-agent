@@ -4,7 +4,7 @@
 
 use std::env;
 
-use crate::llm::minimax::{self, ChatCompletionOutput, ChatCompletionResult, ChatMessage, MiniMaxError};
+use crate::llm::minimax::{self, ChatCompletionResult, ChatMessage, MiniMaxError};
 
 /// DeepSeek client that wraps MiniMaxClient with additional features
 pub struct DeepSeekClient {

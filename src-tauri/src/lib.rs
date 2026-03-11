@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, params};
 use serde_json::Value;
 use tauri::async_runtime;
 use tauri::{Emitter, Manager};
@@ -1310,10 +1310,8 @@ mod tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Load .env first, then .env.deepseek to allow overrides
+    // Load .env file for configuration
     dotenvy::dotenv().ok();
-    // Try to load .env.deepseek if it exists
-    let _ = dotenvy::from_filename(".env.deepseek").ok();
     tauri::Builder::default()
         .setup(|app| {
             let db_state = db::init_db(app.handle())?;
