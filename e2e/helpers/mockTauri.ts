@@ -528,6 +528,29 @@ export async function installMockTauri(page: Page, options: InstallMockOptions):
             saveState(state);
             return null;
           }
+          case "list_providers": {
+            // Return mock providers - MiniMax and DeepSeek
+            return [
+              { id: "minimax", name: "MiniMax", modelId: "MiniMax-M2.5", isConfigured: options.hasApiKey },
+              { id: "deepseek", name: "DeepSeek", modelId: "deepseek-chat", isConfigured: options.hasApiKey },
+            ];
+          }
+          case "get_default_provider": {
+            // Return DeepSeek as default
+            return { id: "deepseek", name: "DeepSeek", modelId: "deepseek-chat", isConfigured: options.hasApiKey };
+          }
+          case "set_default_provider": {
+            const providerId = String(args.providerId);
+            const providers: Record<string, { name: string; modelId: string }> = {
+              minimax: { name: "MiniMax", modelId: "MiniMax-M2.5" },
+              deepseek: { name: "DeepSeek", modelId: "deepseek-chat" },
+            };
+            const provider = providers[providerId];
+            if (provider) {
+              return { id: providerId, ...provider, isConfigured: options.hasApiKey };
+            }
+            throw new Error(`provider ${providerId} not found`);
+          }
           default:
             throw new Error(`mock invoke not implemented for command: ${cmd}`);
         }
